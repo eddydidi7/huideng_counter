@@ -1,0 +1,23 @@
+[functions.storage-token]
+# New publishable keys use explicit getUser verification inside the function.
+verify_jwt = false
+
+[functions.voice-config]
+# JWT verified using Auth getUser inside this function.
+verify_jwt = false
+
+[functions.public-resources]
+# POST verifies Auth; PUT verifies a short-lived HMAC upload ticket and server policy.
+verify_jwt = false
+
+[functions.shared-page]
+# Public slug capability is checked by shared_page_v1; no private notes access.
+verify_jwt = false
+
+[auth]
+# Hosted project must also enable Anonymous Sign-Ins in Authentication settings.
+enable_anonymous_sign_ins = true
+
+[functions.resource-web]
+# Public random slug; RPC checks published status and download policy.
+verify_jwt = false

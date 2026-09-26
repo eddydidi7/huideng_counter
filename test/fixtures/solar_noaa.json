@@ -1,0 +1,116 @@
+{
+  "source": "https://gml.noaa.gov/grad/solcalc/main.js",
+  "method": "NOAA UTC sunrise iterated twice; civil dawn uses 96 degrees in place of 90.833; values are local minutes after midnight",
+  "rows": [
+    {
+      "name": "Shanghai",
+      "lat": 31.2304,
+      "lon": 121.4737,
+      "zone": "Asia/Shanghai",
+      "offset": 8,
+      "date": "2026-09-16",
+      "sunrise": 338.6046660594759,
+      "civilDawn": 314.3166365601601,
+      "solarNoon": 709.2807987874905
+    },
+    {
+      "name": "Shanghai",
+      "lat": 31.2304,
+      "lon": 121.4737,
+      "zone": "Asia/Shanghai",
+      "offset": 8,
+      "date": "2026-09-17",
+      "sunrise": 339.1873056478689,
+      "civilDawn": 314.9164052622732,
+      "solarNoon": 708.9239300304808
+    },
+    {
+      "name": "Shanghai",
+      "lat": 31.2304,
+      "lon": 121.4737,
+      "zone": "Asia/Shanghai",
+      "offset": 8,
+      "date": "2026-09-18",
+      "sunrise": 339.77082106726675,
+      "civilDawn": 315.51552637711893,
+      "solarNoon": 708.5668047205868
+    },
+    {
+      "name": "Auckland",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 12,
+      "date": "2026-09-16",
+      "sunrise": 380.3383738887303,
+      "civilDawn": 354.5292279427317,
+      "solarNoon": 736.1751833310212
+    },
+    {
+      "name": "Auckland",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 12,
+      "date": "2026-09-17",
+      "sunrise": 378.8258135237493,
+      "civilDawn": 353.01942200243343,
+      "solarNoon": 735.8183801475748
+    },
+    {
+      "name": "Auckland",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 12,
+      "date": "2026-09-18",
+      "sunrise": 377.31118688374,
+      "civilDawn": 351.5057127645998,
+      "solarNoon": 735.4612722874921
+    },
+    {
+      "name": "Auckland",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 12,
+      "date": "2026-09-26",
+      "sunrise": 365.1765067270685,
+      "civilDawn": 339.31099433864665,
+      "solarNoon": 732.632981319012
+    },
+    {
+      "name": "Auckland DST",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 13,
+      "date": "2026-09-27",
+      "sunrise": 423.6646289802022,
+      "civilDawn": 397.7830704636092,
+      "solarNoon": 792.2880327474822
+    },
+    {
+      "name": "Auckland DST",
+      "lat": -36.8485,
+      "lon": 174.7633,
+      "zone": "Pacific/Auckland",
+      "offset": 13,
+      "date": "2026-12-21",
+      "sunrise": 357.9997935700392,
+      "civilDawn": 327.21788268916384,
+      "solarNoon": 798.5351671610634
+    },
+    {
+      "name": "Delhi",
+      "lat": 28.6139,
+      "lon": 77.209,
+      "zone": "Asia/Kolkata",
+      "offset": 5.5,
+      "date": "2026-09-17",
+      "sunrise": 366.9845578542545,
+      "civilDawn": 343.35692712347736,
+      "solarNoon": 735.9388260620622
+    }
+  ]
+}

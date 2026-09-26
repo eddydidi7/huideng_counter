@@ -1,0 +1,76 @@
+﻿name: huideng_counter
+description: Manjushri Counter - local-first cross-platform recitation counter.
+publish_to: none
+version: 1.0.56+57
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  huideng_connection:
+    path: ../huideng_connection
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  sqflite: ^2.4.2
+  sqflite_common_ffi: 2.3.6
+  sqlite3: ^2.9.0
+  sqlite3_flutter_libs: ^0.5.39
+  path: ^1.9.1
+  path_provider: ^2.1.5
+  file_picker: ^10.3.10
+  url_launcher: ^6.3.2
+  uuid: ^4.5.2
+  app_links: 7.2.1
+  supabase_flutter: ^2.17.2
+  flutter_secure_storage: ^10.3.4
+  crypto: ^3.0.7
+  http: ^1.6.0
+  http_parser: ^4.1.2
+  flutter_quill: ^11.6.0
+  flutter_webrtc: ^1.6.2+hotfix.3
+  open_filex: ^4.7.0
+  image: ^4.10.1
+  image_picker: ^1.2.3
+  geolocator: 14.0.2
+  nrel_spa: ^1.2.0
+  shared_preferences: 2.5.5
+  flutter_local_notifications: 19.5.0
+  timezone: ^0.10.1
+  record: ^7.1.1
+  audioplayers: ^6.8.1
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.2
+  device_info_plus: ^12.4.0
+  pdf: ^3.12.0
+  cryptography: ^2.9.0
+  web_socket_channel: ^3.0.3
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: SourceHanSans
+      fonts:
+        - asset: assets/fonts/SourceHanSansSC-Regular.otf
+  assets:
+    - assets/fonts/LICENSE.txt
+    - assets/calendar/
+    - assets/stickers/
+    - assets/images/default_chat_avatar.png
+
+# Android API 34 is damaged on this development machine. This local copy only
+# changes the dependency's compile SDK to the installed API 35; its Dart API is
+# unchanged.
+dependency_overrides:
+  flutter_keyboard_visibility_temp_fork:
+    path: third_party/flutter_keyboard_visibility_temp_fork
+
+  open_filex:
+    path: third_party/open_filex
+
+
+
+
+

@@ -1,0 +1,147 @@
+[
+  {
+    "id": "builtin_avalokiteshvara",
+    "asset": "assets/stickers/avalokiteshvara.png",
+    "description": "四臂观音，白色身相，四只手臂，主手合掌，两侧手持念珠和莲花，坐于莲座，慈悲庄严，完整全身"
+  },
+  {
+    "id": "builtin_gratitude_guanyin",
+    "asset": "assets/stickers/gratitude_guanyin.png",
+    "description": "白衣观音坐于莲花上，配清晰中文文字“随喜赞叹”"
+  },
+  {
+    "id": "builtin_offering_mandala",
+    "asset": "assets/stickers/offering_mandala.png",
+    "description": "圆形光晕中的佛教供养曼荼罗，小巧宝座与吉祥供物，庄严明亮，无文字"
+  },
+  {
+    "id": "builtin_manjushri",
+    "asset": "assets/stickers/manjushri.png",
+    "description": "文殊菩萨，右手持智慧剑，左手莲花承经书，坐于莲座，金色温暖，无文字"
+  },
+  {
+    "id": "builtin_mani_blessing",
+    "asset": "assets/stickers/mani_blessing.png",
+    "description": "四臂观音与莲花祥光，配中文“嗡嘛呢叭咪吽”"
+  },
+  {
+    "id": "builtin_amitabha_rose",
+    "asset": "assets/stickers/amitabha_rose.png",
+    "description": "阿弥陀佛端坐莲座，红色袈裟，玫瑰色光背，配中文“阿弥陀佛”"
+  },
+  {
+    "id": "builtin_amitabha_quiet",
+    "asset": "assets/stickers/amitabha_quiet.png",
+    "description": "阿弥陀佛红色身相端坐，柔和米白与浅绿色背景，清静庄严，无文字"
+  },
+  {
+    "id": "builtin_amitabha_green",
+    "asset": "assets/stickers/amitabha_green.png",
+    "description": "阿弥陀佛坐于莲花宝座，明亮绿叶和粉色莲花环绕，配中文“阿弥陀佛”"
+  },
+  {
+    "id": "builtin_amitabha_lotus",
+    "asset": "assets/stickers/amitabha_lotus.png",
+    "description": "阿弥陀佛坐像，雅致复古矿物色，底部文字“阿弥陀佛”"
+  },
+  {
+    "id": "builtin_buddhas_blessing",
+    "asset": "assets/stickers/buddhas_blessing.png",
+    "description": "佛菩萨祈福主题的小幅唐卡风插画，中央白色观音，上方佛陀，下方莲花，简洁清楚，无文字"
+  },
+  {
+    "id": "builtin_monk_amitabha",
+    "asset": "assets/stickers/monk_amitabha.png",
+    "description": "原创可爱小沙弥，红色袈裟，闭眼微笑合掌，文字“阿弥陀佛”"
+  },
+  {
+    "id": "builtin_amitabha_words",
+    "asset": "assets/stickers/amitabha_words.png",
+    "description": "纯祝福文字“阿弥陀佛”，金色字心红色细描边，清晰书法感，不加人物"
+  },
+  {
+    "id": "builtin_smiling_horse",
+    "asset": "assets/stickers/smiling_horse.png",
+    "description": "亲切有趣的棕色马头近景，开心微笑，原创卡通风，不加文字"
+  },
+  {
+    "id": "builtin_dancing_dakini",
+    "asset": "assets/stickers/dancing_dakini.png",
+    "description": "庄严优雅的藏传佛教空行母形象，舞姿立于莲花上，传统绸带与金色饰物，不加文字"
+  },
+  {
+    "id": "builtin_yellow_monk_left",
+    "asset": "assets/stickers/yellow_monk_left.png",
+    "description": "原创成年僧人，黄色袈裟，微微鞠躬合掌，左侧竖排“阿弥陀佛”"
+  },
+  {
+    "id": "builtin_rose",
+    "asset": "assets/stickers/rose.png",
+    "description": "一朵盛开的粉红玫瑰，绿色花茎和两片叶，简洁可爱，无文字"
+  },
+  {
+    "id": "builtin_monk_thanks",
+    "asset": "assets/stickers/monk_thanks.png",
+    "description": "原创可爱小沙弥，红色袈裟，合掌微笑，文字“感恩您”"
+  },
+  {
+    "id": "builtin_palms_gratitude",
+    "asset": "assets/stickers/palms_gratitude.png",
+    "description": "金色合掌双手，旁边雅致小字“感恩”，少量莲花光点"
+  },
+  {
+    "id": "builtin_ink_gratitude",
+    "asset": "assets/stickers/ink_gratitude.png",
+    "description": "水墨线描双手合掌，书法“感恩”，白色与金色线条，适合深色和浅色聊天背景"
+  },
+  {
+    "id": "builtin_palms_amitabha",
+    "asset": "assets/stickers/palms_amitabha.png",
+    "description": "素雅双手合掌线描，配文字“阿弥陀佛”，深棕色清晰描边"
+  },
+  {
+    "id": "builtin_yellow_monk",
+    "asset": "assets/stickers/yellow_monk.png",
+    "description": "原创成年僧人正面，黄色袈裟，平和微笑合掌，无文字"
+  },
+  {
+    "id": "builtin_tibetan_blessing",
+    "asset": "assets/stickers/tibetan_blessing.png",
+    "description": "藏式传统长袍人物手捧洁白哈达，恭敬祝福，底部清晰中文“吉祥如意”，不绘制伪造藏文"
+  },
+  {
+    "id": "builtin_monk_khata",
+    "asset": "assets/stickers/monk_khata.png",
+    "description": "原创可爱小沙弥双手捧起白色哈达，红色袈裟，友善微笑，无文字"
+  },
+  {
+    "id": "builtin_monk_rejoice",
+    "asset": "assets/stickers/monk_rejoice.png",
+    "description": "原创可爱小沙弥捧一朵莲花，配文字“随喜赞叹”"
+  },
+  {
+    "id": "builtin_respect_workers",
+    "asset": "assets/stickers/respect_workers.png",
+    "description": "正方形红底白字祝福卡片，精确文字分四行：“致敬每位”“推动社会”“进步的人”，简洁有力"
+  },
+  {
+    "id": "builtin_winter_solstice",
+    "asset": "assets/stickers/winter_solstice.png",
+    "description": "温暖节庆小卡片，冬至雪花星光和小饺子，清晰文字“冬至快乐”"
+  },
+  {
+    "id": "builtin_golden_lotus",
+    "asset": "assets/stickers/golden_lotus.png",
+    "description": "发光金色莲花灯，温暖小光点，底部清晰文字“随喜赞叹”"
+  },
+  {
+    "id": "builtin_flower_blessing",
+    "asset": "assets/stickers/flower_blessing.png",
+    "description": "原创圆润可爱小动物穿简洁节庆衣服，抛洒粉色花瓣祝福，愉快俏皮，无文字"
+  },
+  {
+    "id": "builtin_pink_hearts",
+    "asset": "assets/stickers/pink_hearts.png",
+    "description": "一组轻盈飘散的粉色爱心与小小光点，简洁爱心祝福贴纸，无文字"
+  }
+]

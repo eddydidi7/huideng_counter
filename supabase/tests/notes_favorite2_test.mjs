@@ -1,0 +1,11 @@
+import fs from 'node:fs';import assert from 'node:assert/strict';
+const {PGlite}=await import(process.env.PGLITE_MODULE);const db=new PGlite();
+await db.exec(`create role anon;create role authenticated;create table public.user_notes(user_id uuid,id uuid,data jsonb,primary key(user_id,id));`);
+const sql=fs.readFileSync('outputs/huideng_counter/supabase/migrations/202609200051_notes_favorite2.sql','utf8');await db.exec(sql);await db.exec(sql);
+const u='00000000-0000-4000-8000-000000000001',id=crypto.randomUUID();
+await db.query('insert into user_notes values($1,$2,$3)',[u,id,{body:'original',isFavorite:1,isFavorite2:1}]);
+await db.query('insert into user_notes values($1,$2,$3) on conflict(user_id,id) do update set data=excluded.data',[u,id,{body:'old client edit',isFavorite:0}]);
+let data=(await db.query('select data from user_notes')).rows[0].data;assert.equal(data.isFavorite2,1);assert.equal(data.isFavorite,0);
+await assert.rejects(()=>db.query('update user_notes set data=$1',[{isFavorite2:9}]),/Invalid Favorites/);
+await db.query('update user_notes set data=$1',[{body:'same note',isFavorite2:0}]);assert.equal((await db.query('select count(*)::int n from user_notes')).rows[0].n,1);
+console.log('PASS: Favorites 2 old client preservation, independent flag, validation, migration repeat');await db.close();
