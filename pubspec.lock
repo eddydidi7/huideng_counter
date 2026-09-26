@@ -663,7 +663,7 @@ packages:
   huideng_connection:
     dependency: "direct main"
     description:
-      path: "../huideng_connection"
+      path: "packages/huideng_connection"
       relative: true
     source: path
     version: "0.1.0"

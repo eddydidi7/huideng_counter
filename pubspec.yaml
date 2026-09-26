@@ -6,7 +6,7 @@ environment:
   sdk: '>=3.10.0 <4.0.0'
 dependencies:
   huideng_connection:
-    path: ../huideng_connection
+    path: packages/huideng_connection
   flutter:
     sdk: flutter
   flutter_localizations:

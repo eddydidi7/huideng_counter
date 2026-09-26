@@ -1,0 +1,13 @@
+name: huideng_connection
+description: Signed same-project backend routing for the mobile and admin applications.
+publish_to: none
+version: 0.1.0
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+  cryptography: ^2.9.0
+  shared_preferences: ^2.5.5
+  web_socket_channel: ^3.0.3

@@ -1,4 +1,24 @@
 workflows:
+  ios-build-check:
+    name: iOS build check (no signing, no Apple account needed)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Get Flutter packages
+        script: flutter packages pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          find . -name "Podfile" -maxdepth 2 -execdir pod install \;
+      - name: Flutter build ios (unsigned)
+        script: flutter build ios --release --no-codesign
+    artifacts:
+      - /tmp/xcodebuild_logs/*.log
+      - flutter_drive.log
+
   ios-testflight:
     name: iOS TestFlight (internal team testing)
     max_build_duration: 60
