@@ -3,6 +3,8 @@ workflows:
     name: iOS TestFlight (internal team testing)
     max_build_duration: 60
     instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: huideng_app_store_connect # create this integration in Codemagic > Team settings > Integrations once the Apple Developer account is ready
     environment:
       groups:
         - app_store_credentials # add in Codemagic UI: App Store Connect API key
