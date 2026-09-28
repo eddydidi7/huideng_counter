@@ -58,6 +58,16 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    lint {
+        // "Lint Vital" runs automatically before assembleRelease and analyzes every
+        // dependency module (including plugins like file_picker) into build/.../lint-cache.
+        // On Windows that cache is prone to FileSystemException when a leftover Gradle
+        // daemon or antivirus scan still has a jar open, which aborts the whole release
+        // build for reasons unrelated to actual lint findings. `flutter analyze` (step 3
+        // of the build script) already covers our own code, so skip lint at assemble time.
+        checkReleaseBuilds = false
+    }
 }
 
 kotlin {
