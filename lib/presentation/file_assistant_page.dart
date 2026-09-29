@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
 import '../core/app_controller.dart';
 import '../services/assistant_session.dart';
+import '../services/broadcast_inbox.dart';
 import '../services/resumable_transfer.dart';
 
 String fileSizeText(num bytes) {
@@ -34,21 +35,34 @@ class FileAssistantPage extends StatefulWidget {
 
 class _FileAssistantPageState extends State<FileAssistantPage> {
   final manager = AssistantManager.instance;
+  final inbox = BroadcastInbox.instance;
   List<Map<String, dynamic>> unfinished = [];
+  final downloadProgress = <String, double>{};
+  final downloading = <String>{};
   bool starting = true;
 
   @override
   void initState() {
     super.initState();
     manager.addListener(changed);
+    inbox.addListener(changed);
     unawaited(load());
   }
 
   Future<void> load() async {
     final client = widget.app.cloud?.client;
-    if (client != null) await manager.ensure(client);
+    if (client != null) {
+      await manager.ensure(client);
+      unawaited(inbox.ensure(client));
+    }
     final rows = await manager.resumable();
     if (mounted) setState(() => (unfinished = rows, starting = false));
+    // Opening this page is the "seen" moment (spec: 进入文件传输助手可以看到).
+    // Done after the frame, never inside build/broadcastTile, so it can't
+    // trigger a notifyListeners() while a widget tree is being built.
+    for (final item in inbox.items) {
+      if (item['read_at'] == null) unawaited(inbox.markRead(item['broadcast_id'] as String));
+    }
   }
 
   void changed() {
@@ -58,7 +72,65 @@ class _FileAssistantPageState extends State<FileAssistantPage> {
   @override
   void dispose() {
     manager.removeListener(changed);
+    inbox.removeListener(changed);
     super.dispose();
+  }
+
+  Future<void> downloadBroadcast(Map<String, dynamic> item) async {
+    final id = item['broadcast_id'] as String;
+    if (downloading.contains(id)) return;
+    setState(() {
+      downloading.add(id);
+      downloadProgress[id] = 0;
+    });
+    try {
+      final path = await inbox.download(item, onProgress: (p) {
+        if (mounted) setState(() => downloadProgress[id] = p);
+      });
+      if (mounted) await OpenFilex.open(path);
+    } catch (e) {
+      if (mounted) toast('下载失败：${e.toString().replaceAll('Exception: ', '')}');
+    } finally {
+      if (mounted) setState(() => downloading.remove(id));
+    }
+  }
+
+  Widget broadcastTile(Map<String, dynamic> item) {
+    final id = item['broadcast_id'] as String;
+    final isDownloading = downloading.contains(id);
+    final progress = downloadProgress[id];
+    final downloaded = item['downloaded_at'] != null;
+    final unread = item['read_at'] == null;
+    return Card(
+      key: ValueKey('broadcast-$id'),
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      color: unread ? Theme.of(context).colorScheme.secondaryContainer : null,
+      child: ListTile(
+        leading: const Icon(Icons.campaign_outlined),
+        title: Text('${item['title'] != '' ? item['title'] : item['file_name']}'),
+        subtitle: Text(
+          '${item['file_name']} · ${fileSizeText(item['file_size'] as num)}'
+          '${(item['note'] as String? ?? '').isNotEmpty ? '\n${item['note']}' : ''}'
+          '\n来自管理员${downloaded ? ' · 已下载' : ''}',
+        ),
+        isThreeLine: (item['note'] as String? ?? '').isNotEmpty,
+        trailing: isDownloading
+            ? SizedBox(
+                width: 72,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    LinearProgressIndicator(value: progress),
+                    Text('${((progress ?? 0) * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 11)),
+                  ],
+                ),
+              )
+            : IconButton(
+                icon: Icon(downloaded ? Icons.replay : Icons.download),
+                onPressed: () => downloadBroadcast(item),
+              ),
+      ),
+    );
   }
 
   void toast(String text) =>
@@ -214,6 +286,12 @@ class _FileAssistantPageState extends State<FileAssistantPage> {
                 title: Text('服务器尚未开通文件传输助手'),
                 subtitle: Text('需要部署 202609250073 迁移后才能使用。'),
               ),
+            if (!inbox.available)
+              const ListTile(
+                title: Text('服务器尚未开通后台群发'),
+                subtitle: Text('需要部署 202609290076 迁移后才能使用。'),
+              ),
+            for (final item in inbox.items) broadcastTile(item),
             for (final offer in manager.offers)
               Card(
                 margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),

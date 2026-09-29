@@ -1,8 +1,12 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import '../core/app_controller.dart';
 import '../services/apk_files.dart';
 import '../services/app_release.dart';
+import '../services/generic_download.dart';
 
 class AppUpdatePage extends StatefulWidget {
   final AppController app;
@@ -29,17 +33,16 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       error = '';
     });
     try {
-      if (!Platform.isAndroid) throw StateError('当前平台不支持 Android APK 安装');
-      final info = await ApkFiles.channel.invokeMapMethod<String, dynamic>(
-        'current',
-      );
+      final platform = currentReleasePlatform();
+      if (platform == null) throw StateError('当前平台暂不支持应用内更新');
+      final installed = await InstalledApp.current();
       final client = widget.app.cloud?.client;
       if (client == null) throw StateError('暂时无法连接版本服务，请稍后重试');
-      final next = await AppRelease.latest(client);
+      final next = await AppRelease.forPlatform(client, platform);
       if (!mounted) return;
       setState(() {
-        current = info?['versionName']?.toString() ?? '—';
-        currentCode = (info?['versionCode'] as num?)?.toInt() ?? 0;
+        current = installed.versionName;
+        currentCode = installed.versionCode;
         release = next;
         status = next == null
             ? '暂未发布正式更新'
@@ -63,30 +66,56 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       status = '下载中';
     });
     try {
-      final path = await ApkFiles.download(
-        owner: 'app-update',
-        id: '${target.code}:${target.hash}',
-        name: 'huideng-${target.name}.apk',
-        size: target.size,
-        checksum: target.hash,
-        url: () async => target.url,
-        guard: () {},
-        progress: (p) {
-          if (mounted) setState(() => progress = p);
-        },
-      );
-      // Validate actual package, certificate and version, not just manifest text.
-      final info = await ApkFiles.channel.invokeMapMethod<String, dynamic>(
-        'verifyUpdate',
-        path,
-      );
-      if (info?['versionCode'] != target.code ||
-          info?['versionName'] != target.name) {
-        throw StateError('安装包版本与发布信息不一致，已禁止安装');
+      void onProgress(double p) {
+        if (mounted) setState(() => progress = p);
+        debugPrint('[UPDATE_DOWNLOAD] download=${(p * 100).toStringAsFixed(0)}%');
       }
-      if (!mounted) return;
-      setState(() => status = '校验通过，请在系统界面确认安装');
-      await ApkFiles.channel.invokeMethod('install', path);
+
+      if (Platform.isAndroid) {
+        final path = await ApkFiles.download(
+          owner: 'app-update',
+          id: '${target.code}:${target.hash}',
+          name: 'huideng-${target.name}.apk',
+          size: target.size,
+          checksum: target.hash,
+          url: () async => target.url,
+          guard: () {},
+          progress: onProgress,
+        );
+        // Validate actual package, certificate and version, not just manifest text.
+        final info = await ApkFiles.channel.invokeMapMethod<String, dynamic>(
+          'verifyUpdate',
+          path,
+        );
+        if (info?['versionCode'] != target.code ||
+            info?['versionName'] != target.name) {
+          throw StateError('安装包版本与发布信息不一致，已禁止安装');
+        }
+        if (!mounted) return;
+        setState(() => status = '校验通过，请在系统界面确认安装');
+        await ApkFiles.channel.invokeMethod('install', path);
+      } else {
+        // Windows: no silent self-update. Download (size + sha256 verified
+        // against the published release), then hand off to the installer's
+        // own UI, same as a manually downloaded file.
+        final dir = await getApplicationSupportDirectory();
+        final ext = Uri.parse(target.url).path.split('.').last;
+        final path = await downloadFile(
+          url: target.url,
+          targetPath: p.join(dir.path, 'app_update', 'huideng-${target.name}.$ext'),
+          size: target.size,
+          sha256Hex: target.hash,
+          maxBytes: 524288000,
+          onProgress: onProgress,
+        );
+        if (!mounted) return;
+        setState(() => status = '下载完成，正在打开安装程序…');
+        final result = await OpenFilex.open(path);
+        if (result.type != ResultType.done) {
+          throw StateError('无法自动打开安装程序，请在“$path”手动运行。');
+        }
+        if (mounted) setState(() => status = '请在安装程序中完成更新');
+      }
     } catch (e) {
       if (mounted) {
         setState(
@@ -144,7 +173,9 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                 ),
             ],
           ),
-          const Text('更新保留现有数据。若系统要求，请允许来自此来源的应用；返回后由你确认安装。'),
+          Text(Platform.isAndroid
+              ? '更新保留现有数据。若系统要求，请允许来自此来源的应用；返回后由你确认安装。'
+              : '更新保留现有数据。下载完成后会自动打开安装程序，请按提示完成安装。'),
         ],
       ),
     ),

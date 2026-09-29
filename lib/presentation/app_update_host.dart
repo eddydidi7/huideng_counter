@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/app_controller.dart';
-import '../services/apk_files.dart';
 import '../services/app_release.dart';
 import 'app_update_page.dart';
 
@@ -28,7 +26,8 @@ class _AppUpdateHostState extends State<AppUpdateHost> {
   Future<void> check() async {
     final client = widget.app.cloud?.client;
     final nav = widget.app.navigatorKey.currentState;
-    if (!Platform.isAndroid ||
+    final platform = currentReleasePlatform();
+    if (platform == null ||
         client == null ||
         nav == null ||
         checking ||
@@ -37,15 +36,13 @@ class _AppUpdateHostState extends State<AppUpdateHost> {
     }
     checking = true;
     try {
-      final next = await AppRelease.latest(client);
-      final info = await ApkFiles.channel.invokeMapMethod<String, dynamic>(
-        'current',
-      );
+      final next = await AppRelease.forPlatform(client, platform);
+      final installed = await InstalledApp.current();
+      debugPrint('[UPDATE_CHECK] currentVersionCode=${installed.versionCode} '
+          'latestVersionCode=${next?.code} updateAvailable=${next != null && next.code > installed.versionCode}');
       finished = true;
       timer?.cancel();
-      if (next == null ||
-          next.code <= ((info?['versionCode'] as num?)?.toInt() ?? 0) ||
-          !mounted) {
+      if (next == null || next.code <= installed.versionCode || !mounted) {
         return;
       }
       final prefs = await SharedPreferences.getInstance();

@@ -2,6 +2,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/resource_upload_policy.dart';
 import '../services/group_operation_error.dart';
 import '../services/assistant_session.dart';
+import '../services/broadcast_inbox.dart';
 import 'file_assistant_page.dart';
 import 'public_profile_page.dart';
 import 'chat_guest_gate.dart';
@@ -824,22 +825,26 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
             Padding(padding: const EdgeInsets.all(8), child: Text(error!)),
           if (live != null) TransferInbox(app: app, live: live!),
           ListenableBuilder(
-            listenable: AssistantManager.instance,
+            listenable: Listenable.merge([AssistantManager.instance, BroadcastInbox.instance]),
             builder: (context, _) {
               final m = AssistantManager.instance;
+              final unreadBroadcasts = BroadcastInbox.instance.unreadCount;
               final running = m.sessions.values.where((s) => !s.ended).length;
+              final badgeCount = m.offers.length + unreadBroadcasts;
               return ListTile(
                 key: const ValueKey('chat-file-assistant'),
                 dense: true,
                 visualDensity: VisualDensity.compact,
                 leading: Badge(
-                  isLabelVisible: m.offers.isNotEmpty,
-                  label: Text('${m.offers.length}'),
+                  isLabelVisible: badgeCount > 0,
+                  label: Text('$badgeCount'),
                   child: const Icon(Icons.devices_other),
                 ),
                 title: Text(tr('文件传输助手', 'File transfer assistant')),
                 subtitle: Text(
-                  m.offers.isNotEmpty
+                  unreadBroadcasts > 0
+                      ? tr('有 $unreadBroadcasts 个后台发送的新文件', '$unreadBroadcasts new from admin')
+                      : m.offers.isNotEmpty
                       ? tr('有 ${m.offers.length} 个文件等待接收', '${m.offers.length} incoming')
                       : running > 0
                       ? tr('$running 个传输进行中', '$running running')

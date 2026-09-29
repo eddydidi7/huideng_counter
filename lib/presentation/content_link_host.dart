@@ -15,6 +15,7 @@ import 'forum_page.dart';
 import 'cloud_drive_page.dart';
 import 'settings_page.dart';
 import 'app_update_page.dart';
+import '../services/broadcast_inbox.dart';
 import '../services/chat_notifications.dart';
 import '../services/solar_reminder_service.dart';
 import '../data/local/chat_store.dart';
@@ -52,6 +53,11 @@ class _ContentLinkHostState extends State<ContentLinkHost> {
       chatNotifications = client != null && user != null
           ? (ChatNotifications(client, user)..start())
           : null;
+    }
+    if (client != null && user != null) {
+      unawaited(BroadcastInbox.instance.ensure(client));
+    } else {
+      unawaited(BroadcastInbox.instance.stop());
     }
     openNotification();
   }
@@ -276,6 +282,7 @@ class _ContentLinkHostState extends State<ContentLinkHost> {
   @override
   void dispose() {
     chatNotifications?.dispose();
+    unawaited(BroadcastInbox.instance.stop());
     subscription?.cancel();
     retry?.cancel();
     practiceRetry?.cancel();
