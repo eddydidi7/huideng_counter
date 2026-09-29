@@ -59,6 +59,7 @@ alter table public.admin_broadcast_recipients enable row level security;
 -- chat_messages. Only a recipient's own rows are visible; all writes still
 -- go through the security-definer RPCs below, since no insert/update policy
 -- exists for authenticated.
+drop policy if exists admin_broadcast_recipients_read on public.admin_broadcast_recipients;
 create policy admin_broadcast_recipients_read on public.admin_broadcast_recipients
   for select to authenticated using (user_id = auth.uid());
 
@@ -72,6 +73,7 @@ language sql stable security definer set search_path=pg_catalog,public as $$
 $$;
 revoke all on function public.broadcast_file_readable(text) from public;
 grant execute on function public.broadcast_file_readable(text) to authenticated;
+drop policy if exists broadcast_file_download on storage.objects;
 create policy broadcast_file_download on storage.objects for select to authenticated using(
   bucket_id='broadcast-files' and public.broadcast_file_readable(name)
 );
@@ -208,7 +210,9 @@ revoke all on function public.broadcast_inbox_v1(text,jsonb) from public;
 grant execute on function public.broadcast_inbox_v1(text,jsonb) to authenticated;
 
 do $$ begin
-  if exists(select 1 from pg_publication where pubname='supabase_realtime') then
+  if exists(select 1 from pg_publication where pubname='supabase_realtime')
+     and not exists(select 1 from pg_publication_tables
+       where pubname='supabase_realtime' and schemaname='public' and tablename='admin_broadcast_recipients') then
     alter publication supabase_realtime add table public.admin_broadcast_recipients;
   end if;
 end $$;
