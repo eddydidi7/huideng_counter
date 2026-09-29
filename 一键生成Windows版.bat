@@ -4,7 +4,12 @@ setlocal EnableExtensions
 set "FLUTTER=C:\Users\eddyd\Documents\Codex\tools\flutter\bin\flutter.bat"
 set "PROJECT=%~dp0"
 if "%PROJECT:~-1%"=="\" set "PROJECT=%PROJECT:~0,-1%"
-for %%I in ("%PROJECT%\..") do set "OUTPUTS=%%~fI"
+rem Resolve the parent directory via pushd+CD instead of a FOR-loop %%~f
+rem modifier: some Windows/PowerShell combinations reject that syntax with
+rem "批处理参数替换中的路径运算符的下列用法无效", even though it is valid batch.
+pushd "%PROJECT%\.."
+set "OUTPUTS=%CD%"
+popd
 
 rem The project path is very long; Windows builds fail beyond 260 characters.
 rem Map the parent folder (it also holds ../huideng_connection) to a short
@@ -23,6 +28,12 @@ if errorlevel 1 (
   exit /b 1
 )
 pushd %DRIVE%\huideng_counter
+if errorlevel 1 (
+  echo 找不到 %DRIVE%\huideng_counter（项目文件夹名或位置和脚本预期的不一致）。
+  subst %DRIVE% /d
+  pause
+  exit /b 1
+)
 
 echo [1/3] 获取依赖...
 call "%FLUTTER%" pub get
