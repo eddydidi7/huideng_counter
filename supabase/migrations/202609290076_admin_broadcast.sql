@@ -99,7 +99,13 @@ begin
     return previous.result;
   end if;
 
-  if action='levels.set' then
+  if action='levels.get' then
+    target:=(payload->>'user_id')::uuid;
+    if target is null then raise exception 'invalid_input'; end if;
+    result:=jsonb_build_object('user_id',target,
+      'level',coalesce((select level from public.app_broadcast_levels where user_id=target),1));
+
+  elsif action='levels.set' then
     target:=(payload->>'user_id')::uuid;
     lvl:=(payload->>'level')::integer;
     if target is null or lvl not between 1 and 5 then raise exception 'invalid_input'; end if;
