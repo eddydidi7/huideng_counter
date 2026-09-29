@@ -13,6 +13,13 @@ begin
   if to_regprocedure('public.huideng_admin_releases(uuid,text,jsonb,uuid)') is null then
     raise exception 'Missing prerequisite: huideng_admin_releases (202609210058)';
   end if;
+  -- The live huideng_admin_releases wraps this second function, which is
+  -- where the actual "insert into app_releases" for releases.save lives
+  -- (huideng_admin_releases itself only layers update-policy fields, added
+  -- after 058, on top of it). That is the function this migration patches.
+  if to_regprocedure('public.huideng_admin_releases_before_policy(uuid,text,jsonb,uuid)') is null then
+    raise exception 'Missing prerequisite: huideng_admin_releases_before_policy';
+  end if;
 end $$;
 
 alter table public.app_releases add column if not exists platform text not null default 'android'
@@ -38,7 +45,7 @@ grant execute on function public.latest_app_version() to anon,authenticated;
 do $$
 declare definition text; old_rule text; new_rule text;
 begin
-  definition := pg_get_functiondef('public.huideng_admin_releases(uuid,text,jsonb,uuid)'::regprocedure);
+  definition := pg_get_functiondef('public.huideng_admin_releases_before_policy(uuid,text,jsonb,uuid)'::regprocedure);
 
   old_rule := 'insert into public.app_releases(version_code,version_name,download_url,release_notes,apk_size,sha256,published_at,force_update,is_published)';
   new_rule := 'insert into public.app_releases(version_code,platform,version_name,download_url,release_notes,apk_size,sha256,published_at,force_update,is_published)';
