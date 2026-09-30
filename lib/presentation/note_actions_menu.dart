@@ -41,6 +41,7 @@ List<NoteMenuEntry> noteQuickActions(
       note['isFavorite'] == 1 ? '取消收藏' : '收藏',
     ),
     item('share', Icons.share_outlined, '分享到…', submenu: true),
+    item('duplicate', Icons.copy_outlined, '创建副本'),
     item('category_add', Icons.folder_outlined, '添加到笔记本'),
     item('select', Icons.checklist, '选择笔记'),
     item(

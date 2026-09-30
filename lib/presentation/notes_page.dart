@@ -13,6 +13,7 @@ import '../data/local/home_message_cache.dart';
 import 'note_grid.dart';
 import 'note_actions_menu.dart';
 import 'note_list_share.dart';
+import 'note_tools.dart';
 import 'note_search_page.dart';
 import '../services/note_export.dart';
 import '../core/sync_diagnostics.dart';
@@ -302,6 +303,11 @@ class _NotesPageState extends State<NotesPage> {
           ).showSnackBar(const SnackBar(content: Text('操作未完成，请重试。笔记未删除。')));
         }
       }
+      return;
+    }
+    if (action == 'duplicate') {
+      await runNoteTool(context, app, row['id'] as String, 'duplicate');
+      if (mounted) update(() {});
       return;
     }
     if (action == 'category') {

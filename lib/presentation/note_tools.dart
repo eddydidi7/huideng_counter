@@ -5,6 +5,41 @@ import '../data/repositories/notes_repository.dart';
 import '../data/repositories/sqlite_counter_repository.dart';
 import 'note_categories_page.dart';
 import 'note_reader_page.dart';
+import 'note_rich_content.dart';
+
+/// The name a note shows in the list: its own title, or (matching
+/// notes_page.dart's noteSummary) the first line of its body when untitled.
+String noteDisplayTitle(Map<String, Object?> row) {
+  final title = (row['title'] as String? ?? '').trim();
+  if (title.isNotEmpty) return title;
+  final text = NoteRichContent.plainText(row['body'] as String? ?? '')
+      .trim()
+      .split('\n')
+      .first
+      .trim();
+  return text.isEmpty ? '空白笔记' : String.fromCharCodes(text.runes.take(40));
+}
+
+final _copySuffix = RegExp(r'^(.*) - 副本(?: (\d+))?$');
+
+/// The next free "<base> - 副本" / "<base> - 副本 2" name among this
+/// scope's non-trashed notes, so a duplicate is never visually
+/// indistinguishable from the note it was copied from. Re-duplicating an
+/// already-duplicated note starts from its own base name, not "X - 副本 -
+/// 副本".
+Future<String> nextCopyTitle(NotesRepository repository, String title) async {
+  final base = _copySuffix.firstMatch(title)?.group(1) ?? title;
+  final existing = {
+    for (final row in await repository.list(folder: 'active'))
+      noteDisplayTitle(row),
+  };
+  final first = '$base - 副本';
+  if (!existing.contains(first)) return first;
+  for (var n = 2; ; n++) {
+    final next = '$base - 副本 $n';
+    if (!existing.contains(next)) return next;
+  }
+}
 
 /// Explicit metadata operations; the reader never writes its body snapshot back.
 Future<bool> runNoteTool(
@@ -135,7 +170,7 @@ Future<bool> runNoteTool(
     }
     if (action == 'duplicate') {
       await repository.save({
-        'title': row['title'],
+        'title': await nextCopyTitle(repository, noteDisplayTitle(row)),
         'body': row['body'],
         'source_post_id': row['source_post_id'],
         'source_meta': row['source_meta'],
