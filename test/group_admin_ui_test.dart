@@ -154,6 +154,87 @@ void main() {
     });
   });
 
+  testWidgets('initialSelecting opens straight into batch-remove mode for a manager', (tester) async {
+    final calls = <Map<String, dynamic>>[];
+    final client = await tester.runAsync(
+      () => fakeClient(calls, (action, data) => switch (action) {
+        'members' => {
+          'managers': [person(me, '群主甲', 'owner')],
+          'items': [person('m1', '成员丙', 'member'), person('m2', '成员丁', 'member')],
+          'total': 3,
+        },
+        'remove' => {'done': 1, 'skipped': 0},
+        _ => {},
+      }),
+    );
+    final db = await tester.runAsync(() => LocalDatabase.openAt(inMemoryDatabasePath));
+    final app = AppController(SqliteCounterRepository(db!));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GroupMembersPage(
+          app: app,
+          admin: GroupAdmin(client!, room),
+          myRole: 'owner',
+          initialSelecting: true,
+        ),
+      ),
+    );
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pumpAndSettle();
+    // Straight into selection mode: no extra tap on "批量" needed.
+    expect(find.text('已选择 0 人'), findsOneWidget);
+    expect(find.text('批量移出'), findsOneWidget);
+    await tester.tap(find.text('成员丙'));
+    await tester.pump();
+    expect(find.text('已选择 1 人'), findsOneWidget);
+    await tester.tap(find.text('批量移出'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确定'));
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pumpAndSettle();
+    final remove = calls.lastWhere((c) => c['action'] == 'remove');
+    expect(remove['data']['user_ids'], ['m1']);
+    expect(remove['data']['ban'], false);
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() async {
+      await client.dispose();
+      await db.close();
+    });
+  });
+
+  testWidgets('initialSelecting is ignored when picking a member (e.g. transfer ownership)', (tester) async {
+    final calls = <Map<String, dynamic>>[];
+    final client = await tester.runAsync(
+      () => fakeClient(calls, (action, data) => {
+        'managers': [person(me, '群主甲', 'owner')],
+        'items': [person('m1', '成员丙', 'member')],
+        'total': 2,
+      }),
+    );
+    final db = await tester.runAsync(() => LocalDatabase.openAt(inMemoryDatabasePath));
+    final app = AppController(SqliteCounterRepository(db!));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GroupMembersPage(
+          app: app,
+          admin: GroupAdmin(client!, room),
+          myRole: 'owner',
+          pickTitle: '选择新群主',
+          initialSelecting: true,
+        ),
+      ),
+    );
+    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await tester.pumpAndSettle();
+    expect(find.text('选择新群主'), findsOneWidget);
+    expect(find.text('批量移出'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() async {
+      await client.dispose();
+      await db.close();
+    });
+  });
+
   testWidgets('ordinary members see no batch or management actions', (tester) async {
     final calls = <Map<String, dynamic>>[];
     final client = await tester.runAsync(
