@@ -6,8 +6,11 @@ import 'package:image/image.dart' as img;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:huideng_counter/presentation/chat_avatar.dart';
 import 'package:huideng_counter/services/chat_image.dart';
+import 'package:huideng_counter/core/app_controller.dart';
+import 'forum_test.dart' show UnusedCounter;
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   test('public avatars use current profile path and fail closed', () async {
     String? path = 'author/current.jpg';
     final signed = <String>[];
@@ -40,7 +43,9 @@ void main() {
       contains('current.jpg'),
     );
     signed.clear();
-    final avatar = ChatAvatar(publicClient: client, userId: 'author');
+    final app = AppController(UnusedCounter());
+    addTearDown(app.dispose);
+    final avatar = ChatAvatar(app: app, publicClient: client, userId: 'author');
     expect(await avatar.load(), contains('current.jpg'));
     path = 'author/replacement.jpg';
     expect(await avatar.load(), contains('replacement.jpg'));

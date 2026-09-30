@@ -9,7 +9,7 @@ Deno.serve(async(req)=>{
  const {data,error}=await client.rpc('public_resource_web_resolve',{p_slug:slug,p_download:download});
  if(error)throw error;
  if(!download)return reply(200,{file:data});
- const signed=await client.storage.from('public-resources').createSignedUrl(data.object_key,120,{download:data.file_name});
+ const signed=await client.storage.from(data.storage_bucket==='group-files'?'group-files':'public-resources').createSignedUrl(data.object_key,120,{download:data.file_name});
  if(signed.error)throw signed.error;
  if(u.searchParams.get('redirect')==='1')return new Response(null,{status:302,headers:{Location:signed.data.signedUrl,'Cache-Control':'no-store'}});
  return reply(200,{url:signed.data.signedUrl});

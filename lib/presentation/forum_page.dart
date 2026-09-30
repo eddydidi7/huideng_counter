@@ -1,5 +1,6 @@
 ﻿import 'masonry_posts.dart';
 import 'forum_comments.dart';
+import 'windows_display.dart';
 import 'forum_image_viewer.dart';
 import '../data/remote/forum_social.dart';
 import 'cloud_drive_page.dart';
@@ -8,6 +9,7 @@ import 'jieyuan_fields.dart';
 import 'jieyuan_actions.dart';
 import '../domain/post_display.dart';
 import 'chat_avatar.dart';
+import 'profile_navigation.dart';
 import '../data/remote/chat_remote.dart';
 import 'settings_page.dart';
 import 'forum_edit_page.dart';
@@ -109,6 +111,35 @@ class _ForumPageState extends State<ForumPage> {
     generation++;
     search.dispose();
     super.dispose();
+  }
+
+  // Order matches the visible chip row: 全部→最新→热门→板块→结缘.
+  static const channelOrder = ['all', 'latest', 'hot', 'boards', 'jieyuan'];
+
+  void selectChannel(String key) {
+    activeFilter = key;
+    boards = key == 'boards';
+    selectedCategory = key == 'jieyuan' ? 'jieyuan' : '';
+    sort = key == 'hot' ? 'hot' : 'latest';
+    load();
+  }
+
+  // A plain onHorizontalDragEnd (not a generic pan) only wins the gesture
+  // arena when the drag is predominantly horizontal, so normal vertical
+  // list scrolling / pull-to-refresh is unaffected. Nested widgets with
+  // their own horizontal recognizer (post image carousels) sit deeper in
+  // the tree and are hit-tested first, so they naturally take priority
+  // over this outer detector for the same gesture.
+  void swipeChannel(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity.abs() < 200) return;
+    final i = channelOrder.indexOf(activeFilter);
+    if (i < 0) return;
+    if (velocity < 0 && i < channelOrder.length - 1) {
+      selectChannel(channelOrder[i + 1]);
+    } else if (velocity > 0 && i > 0) {
+      selectChannel(channelOrder[i - 1]);
+    }
   }
 
   Future<void> load({bool append = false}) async {
@@ -308,6 +339,8 @@ class _ForumPageState extends State<ForumPage> {
             row: row,
             cached: cached,
             repository: repository,
+            siblings: items,
+            index: items.indexOf(row),
           ),
         ),
       );
@@ -581,8 +614,11 @@ class _ForumPageState extends State<ForumPage> {
           ),
     body: Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 760),
-        child: Column(
+        constraints: BoxConstraints(maxWidth: readingPageMaxWidth(760)),
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: widget.embedded ? swipeChannel : null,
+          child: Column(
           children: [
             if (widget.embedded)
               SingleChildScrollView(
@@ -594,7 +630,7 @@ class _ForumPageState extends State<ForumPage> {
                       'latest': ['最新', 'Latest'],
                       'hot': ['热门', 'Popular'],
                       'boards': ['板块', 'Boards'],
-                      'practice': ['共修', 'Practice'],
+                      'jieyuan': ['结缘', 'Sharing'],
                     }.entries)
                       Padding(
                         padding: const EdgeInsets.symmetric(
@@ -604,15 +640,7 @@ class _ForumPageState extends State<ForumPage> {
                         child: ChoiceChip(
                           label: Text(tr(entry.value[0], entry.value[1])),
                           selected: activeFilter == entry.key,
-                          onSelected: (_) {
-                            activeFilter = entry.key;
-                            boards = entry.key == 'boards';
-                            selectedCategory = entry.key == 'practice'
-                                ? 'practice'
-                                : '';
-                            sort = entry.key == 'hot' ? 'hot' : 'latest';
-                            load();
-                          },
+                          onSelected: (_) => selectChannel(entry.key),
                         ),
                       ),
                   ],
@@ -824,6 +852,7 @@ class _ForumPageState extends State<ForumPage> {
             ),
           ],
         ),
+        ),
       ),
     ),
   );
@@ -849,6 +878,7 @@ Widget forumAuthorAvatar(AppController app, Map row, {double radius = 10}) {
   final user = client?.auth.currentUser;
   if (row['author_user_id'] != null) {
     return ChatAvatar(
+      app: app,
       publicClient: client,
       remote: client != null && user != null
           ? ChatRemote(client, user.id)
@@ -857,22 +887,19 @@ Widget forumAuthorAvatar(AppController app, Map row, {double radius = 10}) {
       radius: radius,
     );
   }
-  return CircleAvatar(
-    radius: radius,
-    child: Icon(Icons.person_outline, size: radius * 1.5),
+  return Builder(builder: (context) => GestureDetector(
+    onTap: () => openUserProfile(context, app),
+    child: CircleAvatar(
+      radius: radius,
+      child: Icon(Icons.person_outline, size: radius * 1.5),
+    ),
+  ),
   );
 }
 
 void openForumAuthor(BuildContext context, AppController app, Map row) {
   final id = row['author_user_id'];
-  if (id is String) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PublicProfilePage(app: app, userId: id),
-      ),
-    );
-  }
+  openUserProfile(context, app, userId: id is String ? id : null);
 }
 
 class ForumPostCard extends StatelessWidget {
@@ -967,8 +994,7 @@ class ForumPostCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 2),
                       child: Text(
                         title,
-                        maxLines: listMode ? 3 : 2,
-                        overflow: TextOverflow.ellipsis,
+                        softWrap: true,
                         style: Theme.of(context).textTheme.titleMedium
                             ?.copyWith(fontWeight: FontWeight.w600),
                       ),
@@ -1038,12 +1064,20 @@ class ForumDetailPage extends StatefulWidget {
   final Map<String, dynamic> row;
   final bool cached;
   final ForumRepository? repository;
+  /// The list this post was opened from (current channel/sort order) and
+  /// this post's position in it, so up/down swipe moves along that same
+  /// order. Null when opened without a list context (e.g. a shared link),
+  /// which disables the gesture.
+  final List<Map<String, dynamic>>? siblings;
+  final int? index;
   const ForumDetailPage({
     super.key,
     required this.app,
     required this.row,
     this.cached = false,
     this.repository,
+    this.siblings,
+    this.index,
   });
   @override
   State<ForumDetailPage> createState() => _ForumDetailPageState();
@@ -1072,11 +1106,54 @@ class _ForumDetailPageState extends State<ForumDetailPage> {
       (row['author_user_id'] != null &&
           row['author_user_id'] == socialApi?.userId);
 
+  late int? siblingIndex = widget.index;
+  double overscroll = 0;
   @override
   void initState() {
     super.initState();
     row = widget.row;
     refresh();
+  }
+
+  // Fed by the ListView's own scroll notifications (see build()): normal
+  // scrolling inside the post never reaches here, only genuine overscroll
+  // once the list is already at its top/bottom edge, so mid-article
+  // scrolling can never misfire a post switch. A short post that never
+  // fills the viewport is already "at both edges" from the first pixel of
+  // drag, so it behaves like a full-screen swipeable card, as intended.
+  void trackOverscroll(double delta) {
+    overscroll += delta;
+    if (overscroll > 120) {
+      overscroll = 0;
+      switchPost(1);
+    } else if (overscroll < -120) {
+      overscroll = 0;
+      switchPost(-1);
+    }
+  }
+
+  Future<void> switchPost(int direction) async {
+    final siblings = widget.siblings;
+    final index = siblingIndex;
+    if (siblings == null || index == null) return;
+    final target = index + direction;
+    if (target < 0 || target >= siblings.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            target < 0
+                ? app.text('已经是第一篇', 'This is the first post')
+                : app.text('已经是最后一篇', 'This is the last post'),
+          ),
+        ),
+      );
+      return;
+    }
+    setState(() {
+      row = siblings[target];
+      siblingIndex = target;
+    });
+    await refresh();
   }
 
   /// First call counts one read (per user per day); later calls only reload.
@@ -1653,8 +1730,15 @@ class _ForumDetailPageState extends State<ForumDetailPage> {
       ),
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: ListView(
+          constraints: BoxConstraints(maxWidth: readingPageMaxWidth(760)),
+          child: NotificationListener<ScrollNotification>(
+            onNotification: (n) {
+              if (widget.siblings == null) return false;
+              if (n is OverscrollNotification) trackOverscroll(n.overscroll);
+              if (n is ScrollEndNotification) overscroll = 0;
+              return false;
+            },
+            child: ListView(
             padding: EdgeInsets.zero,
             children: [
               if (pictures.isNotEmpty) ...[
@@ -1741,10 +1825,10 @@ class _ForumDetailPageState extends State<ForumDetailPage> {
                                 ? jsonEncode(row['rich_body'])
                                 : row['body'] as String? ?? '',
                           )
-                        : SelectableText(
+                        : WindowsContentText(child: SelectableText(
                             row['body'] as String? ?? '',
                             style: const TextStyle(fontSize: 18, height: 1.7),
-                          ),
+                          )),
                     for (final file in row['attachments'] as List? ?? [])
                       if (file['kind'] != 'image')
                         ListTile(
@@ -1821,6 +1905,7 @@ class _ForumDetailPageState extends State<ForumDetailPage> {
               ),
             ],
           ),
+            ),
         ),
       ),
     );

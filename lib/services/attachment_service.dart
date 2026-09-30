@@ -1,4 +1,6 @@
 import 'apk_files.dart';
+import '../data/remote/public_resource_api.dart';
+import '../domain/public_resource.dart';
 import 'chat_apk_storage.dart';
 import 'cloud_storage_provider.dart';
 import 'dart:io';
@@ -42,20 +44,37 @@ class AttachmentService {
       throw StateError('文件过大：APK 最大500MB，其他文件最大100MB');
     }
     final checksum = (await sha256.bind(file.openRead()).first).toString();
-    final id = isApk(name)
-        ? const Uuid().v5(
-            '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
-            '$groupId/$owner/$name/$checksum',
-          )
-        : const Uuid().v4();
+    final reuse = await client.rpc(
+      'group_resource_v1',
+      params: {
+        'p_action': 'reuse',
+        'p_data': {
+          'group_id': groupId,
+          'file_name': name,
+          'file_size': size,
+          'checksum': checksum,
+          'album': album,
+          'folder_id': folderId,
+        },
+      },
+    );
+    guard();
+    if (reuse['reused'] == true) return;
+    final id = const Uuid().v5(
+      '6ba7b811-9dad-11d1-80b4-00c04fd430c8',
+      '$groupId/$owner/$name/$checksum/$album/${folderId ?? ''}',
+    );
     guard();
     final reservation = await group('file_reserve', {
       'group_id': groupId,
       'id': id,
       'file_size': size,
     });
+    if (reservation is Map && reservation['committed'] == true) {
+      await verifyGroup(id);
+      return;
+    }
     if (isApk(name)) {
-      if (reservation is Map && reservation['committed'] == true) return;
       try {
         await ChatApkStorage.upload(
           client,
@@ -85,10 +104,45 @@ class AttachmentService {
       'album': album,
       'folder_id': folderId,
     });
+    await verifyGroup(id);
+  }
+
+  Future<void> verifyGroup(String fileId) async {
+    guard();
+    final api = PublicResourceApi.supabase(client);
+    try {
+      await api.verifyGroup(fileId);
+      guard();
+    } finally {
+      api.close();
+    }
   }
 
   Future<String> download(Map<String, dynamic> file) async {
     guard();
+    if (file['bucket'] == 'public-resources' ||
+        file['bucket'] == 'group-files') {
+      final data = await client.rpc(
+        'group_resource_v1',
+        params: {
+          'p_action': 'get',
+          'p_data': {'file_id': file['file_id']},
+        },
+      );
+      guard();
+      final api = PublicResourceApi.supabase(client);
+      try {
+        final path = await api.download(
+          PublicResource.fromJson(Map<String, dynamic>.from(data)),
+          (_) {},
+          groupFileId: file['file_id'] as String,
+        );
+        guard();
+        return path;
+      } finally {
+        api.close();
+      }
+    }
     final url = await client.storage
         .from(file['bucket'] as String)
         .createSignedUrl(file['object_key'] as String, 60);
@@ -130,6 +184,20 @@ class AttachmentService {
       return target.path;
     } finally {
       transport.close();
+    }
+  }
+
+  Future<String> downloadUrl(String fileId) async {
+    guard();
+    final api = PublicResourceApi.supabase(client);
+    try {
+      final plan = await api.request('group.download', {'file_id': fileId});
+      guard();
+      return ResourceTransfer.fromJson(
+        Map<String, dynamic>.from(plan['transfer']),
+      ).uri.toString();
+    } finally {
+      api.close();
     }
   }
 }

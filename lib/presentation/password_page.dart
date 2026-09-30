@@ -30,9 +30,15 @@ class _PasswordPageState extends State<PasswordPage> {
       password = TextEditingController(),
       repeat = TextEditingController();
   late final SupabaseClient client;
-  bool busy = false, verified = false, sent = false, hidePassword = true, hideRepeat = true;
+  bool busy = false,
+      verified = false,
+      sent = false,
+      hidePassword = true,
+      hideRepeat = true,
+      waitingForConfirmation = false;
   int seconds = 0;
   Timer? countdown;
+  Timer? confirmTimer;
   String? message;
   AppController get app => widget.app;
   bool get changing => widget.action == PasswordAction.change;
@@ -44,9 +50,32 @@ class _PasswordPageState extends State<PasswordPage> {
     client = CloudController.isolatedAuthClient();
   }
 
+  // Registration now finishes when the user taps the confirmation link in
+  // their email, not by typing a code (see cloud_controller.dart). This page
+  // just polls the main app session for "no longer anonymous" so it can
+  // report success without any further action from the user.
+  void startConfirmationPolling() {
+    confirmTimer?.cancel();
+    confirmTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (app.cloud?.client?.auth.currentUser?.isAnonymous == false) {
+        confirmTimer?.cancel();
+        if (mounted) {
+          setState(() {
+            waitingForConfirmation = false;
+            message = app.text(
+              '注册成功！可以返回上一页继续使用。',
+              'Registration complete! You can go back now.',
+            );
+          });
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
     countdown?.cancel();
+    confirmTimer?.cancel();
     for (final field in [mail, old, code, password, repeat]) {
       field.dispose();
     }
@@ -113,13 +142,20 @@ class _PasswordPageState extends State<PasswordPage> {
       await client.auth.resetPasswordForEmail(mail.text.trim());
     }
     if (mounted) {
-      setState(
-        () => message = app.text(
-          '验证码已发送，请检查邮箱。',
-          'Verification code sent. Check your email.',
-        ),
-      );
-      sent = true;
+      setState(() {
+        message = registering
+            ? app.text(
+                '确认邮件已发送，请查收邮箱并点击邮件中的链接完成注册。完成后本页会自动提示，无需输入验证码。',
+                'Confirmation email sent. Open your inbox and tap the link to finish registering; this page updates automatically once you do, no code needed.',
+              )
+            : app.text(
+                '验证码已发送，请检查邮箱。',
+                'Verification code sent. Check your email.',
+              );
+        sent = true;
+        if (registering) waitingForConfirmation = true;
+      });
+      if (registering) startConfirmationPolling();
       seconds = 60;
       countdown?.cancel();
       countdown = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -157,27 +193,21 @@ class _PasswordPageState extends State<PasswordPage> {
           password: old.text,
         );
       } else {
-        if (registering) {
-          await app.cloud!.completeGuestRegistration(mail.text, code.text);
-        } else {
-          await client.auth.verifyOTP(
-            email: mail.text.trim(),
-            token: code.text.trim(),
-            type: OtpType.recovery,
-          );
-        }
+        await client.auth.verifyOTP(
+          email: mail.text.trim(),
+          token: code.text.trim(),
+          type: OtpType.recovery,
+        );
       }
       verified = true;
     }
-    if (!registering) {
-      await client.auth.updateUser(
-        UserAttributes(
-          password: password.text,
-          currentPassword: changing ? old.text : null,
-        ),
-      );
-    }
-    if (!registering) await client.auth.signOut(scope: SignOutScope.local);
+    await client.auth.updateUser(
+      UserAttributes(
+        password: password.text,
+        currentPassword: changing ? old.text : null,
+      ),
+    );
+    await client.auth.signOut(scope: SignOutScope.local);
     verified = false;
     if (mounted) {
       old.clear();
@@ -185,12 +215,10 @@ class _PasswordPageState extends State<PasswordPage> {
       password.clear();
       repeat.clear();
       setState(
-        () => message = registering
-            ? app.text('注册成功，请返回登录。', 'Registration complete. Return to sign in.')
-            : app.text(
-                '密码已更新，下次登录请使用新密码。',
-                'Password updated. Use your new password next time you sign in.',
-              ),
+        () => message = app.text(
+          '密码已更新，下次登录请使用新密码。',
+          'Password updated. Use your new password next time you sign in.',
+        ),
       );
     }
   });
@@ -213,7 +241,7 @@ class _PasswordPageState extends State<PasswordPage> {
           children: [
             TextField(
               controller: mail,
-              enabled: !busy && !verified && !changing,
+              enabled: !busy && !verified && !changing && !waitingForConfirmation,
               keyboardType: TextInputType.emailAddress,
               decoration: InputDecoration(labelText: app.text('邮箱', 'Email')),
             ),
@@ -226,7 +254,7 @@ class _PasswordPageState extends State<PasswordPage> {
                   labelText: app.text('当前密码', 'Current password'),
                 ),
               ),
-            if (!changing) ...[
+            if (!changing && !registering) ...[
               Align(alignment: Alignment.centerRight, child: TextButton(onPressed: busy || verified || seconds > 0 ? null : send, child: Text(seconds > 0 ? '重新发送（$seconds秒）' : sent ? '重新发送验证码' : '发送验证码'))),
               TextField(
                 controller: code,
@@ -240,7 +268,7 @@ class _PasswordPageState extends State<PasswordPage> {
             if (!changing) ...[
               TextField(
                 controller: password,
-                enabled: !busy,
+                enabled: !busy && !waitingForConfirmation,
                 obscureText: hidePassword,
                 enableSuggestions: false,
                 autocorrect: false,
@@ -250,7 +278,7 @@ class _PasswordPageState extends State<PasswordPage> {
               ),
               TextField(
                 controller: repeat,
-                enabled: !busy,
+                enabled: !busy && !waitingForConfirmation,
                 obscureText: hideRepeat,
                 enableSuggestions: false,
                 autocorrect: false,
@@ -260,14 +288,26 @@ class _PasswordPageState extends State<PasswordPage> {
               ),
             ],
             const SizedBox(height: 20),
-            FilledButton(
-              onPressed: busy ? null : submit,
-              child: Text(
-                registering
-                    ? app.text('注册账号', 'Create account')
-                    : app.text('保存新密码', 'Save new password'),
+            if (registering)
+              FilledButton(
+                onPressed: busy || seconds > 0 ? null : send,
+                child: Text(
+                  seconds > 0
+                      ? '重新发送（$seconds秒）'
+                      : sent
+                      ? app.text('重新发送确认邮件', 'Resend confirmation email')
+                      : app.text('发送确认邮件', 'Send confirmation email'),
+                ),
+              )
+            else
+              FilledButton(
+                onPressed: busy ? null : submit,
+                child: Text(app.text('保存新密码', 'Save new password')),
               ),
-            ),
+            if (waitingForConfirmation) ...[
+              const SizedBox(height: 12),
+              const Center(child: CircularProgressIndicator()),
+            ],
             if (busy) const LinearProgressIndicator(),
             if (message != null)
               Padding(
@@ -294,14 +334,6 @@ String? stateError(AppController app, Object error) {
     'GUEST_UPGRADE_REQUIRED' => app.text(
         '当前游客身份无法升级。请返回首页后重新进入注册。',
         'The current guest identity cannot be upgraded. Return home and reopen registration.',
-      ),
-    'GUEST_UPGRADE_SESSION_CHANGED' => app.text(
-        '注册期间游客会话已变化。请重新申请验证码，原本地数据不会丢失。',
-        'The guest session changed during registration. Request a new code; local data is retained.',
-      ),
-    'GUEST_UPGRADE_NOT_CONFIRMED' => app.text(
-        '邮箱验证码尚未确认成功。请检查验证码或重新申请。',
-        'Email verification did not complete. Check the code or request a new one.',
       ),
     _ => app.text(
         '注册流程未完成：${error.message}。本地数据已保留。',

@@ -19,6 +19,7 @@ class CloudDrivePage extends StatelessWidget {
     translate: app.text,
     initialResourceId: initialResourceId,
     onShare: (file) => shareResource(context, app, file),
+    onSaveToGroup: (file) => saveResourceToGroup(context, app, file),
     settingsPage: settingsPage,
     createApi: () {
       final client = app.cloud?.client;

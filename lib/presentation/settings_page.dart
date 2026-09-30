@@ -1,10 +1,12 @@
 import '../services/counter_haptics.dart';
+import 'windows_display.dart';
 import 'app_update_page.dart';
 import 'chat_notification_settings_page.dart';
 import 'account_panel.dart';
 import 'my_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../core/app_controller.dart';
 import '../domain/models.dart';
 import 'history_page.dart';
@@ -18,6 +20,7 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  late final version = PackageInfo.fromPlatform();
   AppController get app => widget.app;
   Future<void> set(String key, String value) async {
     try {
@@ -50,7 +53,15 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               ListTile(
                 leading: const Icon(Icons.system_update),
-                title: Text(app.text('更新版本', 'Update version')),
+                title: Text(app.text('检查更新', 'Check for updates')),
+                subtitle: FutureBuilder<PackageInfo>(
+                  future: version,
+                  builder: (_, snapshot) => Text(
+                    snapshot.hasData
+                        ? '当前版本：${snapshot.data!.version}'
+                        : '当前版本：待读取',
+                  ),
+                ),
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute<void>(
@@ -97,6 +108,38 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 8),
+              if (usesWindowsDisplay) ...[
+                DropdownButtonFormField<String>(
+                  key: ValueKey('windows-display-${app.windowsDisplaySize}'),
+                  initialValue: app.windowsDisplaySize,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: app.text('显示大小', 'Display size'),
+                  ),
+                  items: [
+                    DropdownMenuItem(
+                      value: 'small',
+                      child: Text(app.text('小', 'Small')),
+                    ),
+                    DropdownMenuItem(
+                      value: 'standard',
+                      child: Text(app.text('标准', 'Standard')),
+                    ),
+                    DropdownMenuItem(
+                      value: 'large',
+                      child: Text(app.text('大', 'Large')),
+                    ),
+                    DropdownMenuItem(
+                      value: 'extraLarge',
+                      child: Text(app.text('特大', 'Extra large')),
+                    ),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) set('windowsDisplaySize', value);
+                  },
+                ),
+                const SizedBox(height: 10),
+              ],
               DropdownButtonFormField<String>(
                 initialValue: app.languageMode,
                 decoration: InputDecoration(

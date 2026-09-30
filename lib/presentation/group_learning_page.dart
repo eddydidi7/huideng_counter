@@ -1,6 +1,7 @@
 import '../services/chat_apk_storage.dart';
 import '../services/apk_files.dart';
 import 'apk_file_card.dart';
+import 'group_file_share.dart';
 import 'routed_image.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -453,7 +454,7 @@ class _GroupLearningPageState extends State<GroupLearningPage> {
             for (final raw in rows)
               ListTile(
                 leading: isFiles && tab == 'album'
-                    ? GroupFileThumbnail(files: files, path: raw['object_key'])
+                    ? GroupFileThumbnail(files: files, fileId: raw['file_id'])
                     : Icon(
                         isFiles
                             ? Icons.description_outlined
@@ -479,18 +480,24 @@ class _GroupLearningPageState extends State<GroupLearningPage> {
                             size: (raw['file_size'] as num).toInt(),
                             guard: files.guard,
                             createdAt: raw['created_at'],
-                            load: (changed) => ApkFiles.download(
-                              owner: files.owner,
-                              id: raw['file_id'],
-                              name: raw['file_name'],
-                              size: (raw['file_size'] as num).toInt(),
-                              checksum: raw['checksum'],
-                              guard: files.guard,
-                              progress: changed,
-                              url: () => files.client.storage
-                                  .from(raw['bucket'])
-                                  .createSignedUrl(raw['object_key'], 300),
-                            ),
+                            load: (changed) =>
+                                raw['bucket'] == 'public-resources'
+                                ? files.download(raw)
+                                : ApkFiles.download(
+                                    owner: files.owner,
+                                    id: raw['file_id'],
+                                    name: raw['file_name'],
+                                    size: (raw['file_size'] as num).toInt(),
+                                    checksum: raw['checksum'],
+                                    guard: files.guard,
+                                    progress: changed,
+                                    url: () => files.client.storage
+                                        .from(raw['bucket'])
+                                        .createSignedUrl(
+                                          raw['object_key'],
+                                          300,
+                                        ),
+                                  ),
                           ),
                         ),
                         actions: [
@@ -541,6 +548,14 @@ class _GroupLearningPageState extends State<GroupLearningPage> {
                 }),
                 trailing: PopupMenuButton<String>(
                   onSelected: (v) => run(() async {
+                    if (v == 'public') {
+                      await publishGroupFile(
+                        context,
+                        files,
+                        Map<String, dynamic>.from(raw),
+                      );
+                      return;
+                    }
                     if (v == 'remove') {
                       final yes = await showDialog<bool>(
                         context: context,
@@ -610,6 +625,11 @@ class _GroupLearningPageState extends State<GroupLearningPage> {
                   itemBuilder: (_) => [
                     if (isFiles)
                       const PopupMenuItem(
+                        value: 'public',
+                        child: Text('转存到公共网盘'),
+                      ),
+                    if (isFiles)
+                      const PopupMenuItem(
                         value: 'save',
                         child: Text('保存到个人资料夹'),
                       ),
@@ -636,20 +656,16 @@ class GroupFileThumbnail extends StatefulWidget {
   const GroupFileThumbnail({
     super.key,
     required this.files,
-    required this.path,
+    required this.fileId,
   });
   final AttachmentService files;
-  final String path;
+  final String fileId;
   @override
   State<GroupFileThumbnail> createState() => _GroupFileThumbnailState();
 }
 
 class _GroupFileThumbnailState extends State<GroupFileThumbnail> {
-  late final future = widget.files.storage.signedUrl(
-    'group-files',
-    widget.path,
-    120,
-  );
+  late final future = widget.files.downloadUrl(widget.fileId);
   @override
   Widget build(BuildContext context) => SizedBox(
     width: 56,

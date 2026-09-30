@@ -8,6 +8,7 @@ import '../core/app_controller.dart';
 import '../data/repositories/chat_repository.dart';
 import 'chat_page.dart';
 import 'chat_avatar.dart';
+import 'profile_navigation.dart';
 import '../data/remote/chat_live.dart';
 
 class ChatContactsPage extends StatefulWidget {
@@ -290,6 +291,7 @@ class _ChatContactsPageState extends State<ChatContactsPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               ChatAvatar(
+                app: widget.app,
                 remote: repo.remote,
                 userId: person['user_id'] as String,
                 radius: 28,
@@ -454,11 +456,16 @@ class _ChatContactsPageState extends State<ChatContactsPage> {
               : tr('通讯录 / 添加好友', 'Contacts / Add friend'),
         ),
         actions: [
+          IconButton(
+            tooltip: tr('我的个人主页', 'My profile'),
+            onPressed: () => openUserProfile(context, widget.app, userId: repo.remote.userId),
+            icon: const Icon(Icons.person_outline, color: Color(0xFF65BFFF)),
+          ),
           if (widget.onProfile != null)
             IconButton(
-              tooltip: tr('我的头像与在线状态', 'My profile and presence'),
+              tooltip: tr('个人设置与在线状态', 'Profile settings and presence'),
               onPressed: widget.onProfile,
-              icon: const Icon(Icons.person_outline, color: Color(0xFF65BFFF)),
+              icon: const Icon(Icons.more_horiz),
             ),
           IconButton(
             onPressed: () async {
@@ -540,6 +547,7 @@ class _ChatContactsPageState extends State<ChatContactsPage> {
                   for (final person in results)
                     ListTile(
                       leading: ChatAvatar(
+                        app: widget.app,
                         remote: repo.remote,
                         userId: person['user_id'] as String,
                       ),
@@ -582,6 +590,7 @@ class _ChatContactsPageState extends State<ChatContactsPage> {
                                     }),
                             )
                           : ChatAvatar(
+                              app: widget.app,
                               remote: repo.remote,
                               userId: p['user_id'] as String,
                             ),

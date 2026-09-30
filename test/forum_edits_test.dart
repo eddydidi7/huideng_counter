@@ -26,7 +26,8 @@ void main() {
           if (request.url.path.contains('/auth/')) {
             return http.Response(
               jsonEncode({
-                'access_token': '${base64Url.encode(utf8.encode('{"alg":"HS256"}')).replaceAll('=', '')}.${base64Url.encode(utf8.encode(jsonEncode({'sub': owner, 'role': 'authenticated', 'exp': 4102444800}))).replaceAll('=', '')}.test',
+                'access_token':
+                    '${base64Url.encode(utf8.encode('{"alg":"HS256"}')).replaceAll('=', '')}.${base64Url.encode(utf8.encode(jsonEncode({'sub': owner, 'role': 'authenticated', 'exp': 4102444800}))).replaceAll('=', '')}.test',
                 'refresh_token': 'test-refresh',
                 'token_type': 'bearer',
                 'expires_in': 3600,
@@ -100,6 +101,19 @@ void main() {
       expect(requests.length, count);
       expect((await edits().pending()).single['error'], 'content_conflict');
       await edits().discard('post');
+      expect(await edits().pending(), isEmpty);
+      const historicalBody = '原来的第一句。原来的后续正文。';
+      await edits().save(
+        {...post, 'title': '', 'body': historicalBody},
+        'edit',
+        title: '自行修改标题',
+        body: historicalBody,
+      );
+      failure = '';
+      await edits().sync();
+      final edited = jsonDecode(requests.last)['p_data'] as Map;
+      expect(edited['title'], '自行修改标题');
+      expect(edited['body'], historicalBody);
       expect(await edits().pending(), isEmpty);
       await client.dispose();
       await store.db.close();

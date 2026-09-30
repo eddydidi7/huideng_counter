@@ -12,10 +12,61 @@ import 'package:crypto/crypto.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'windows_display.dart';
 import '../domain/note_reader.dart';
+import '../domain/reader_progress.dart';
+import '../services/windows_reader_speech.dart';
 import 'routed_image.dart';
+
+class PreparedNoteReader {
+  PreparedNoteReader(this.paragraphs, this.preferences);
+  final List<ReaderParagraph> paragraphs;
+  final SharedPreferences preferences;
+
+  static Future<PreparedNoteReader> load(String body) async {
+    final paragraphs = body.length < 100000
+        ? readerParagraphs(body)
+        : await compute(readerParagraphs, body);
+    return PreparedNoteReader(
+      paragraphs,
+      await SharedPreferences.getInstance(),
+    );
+  }
+}
+
+/// Keep the editor mounted and visible until the reader can paint its content.
+Future<void> openNoteReader(
+  BuildContext context, {
+  required String body,
+  required String noteId,
+  required String scope,
+  required String title,
+  required int? documentOffset,
+  AppController? app,
+  bool storedNote = true,
+}) async {
+  final prepared = await PreparedNoteReader.load(body);
+  if (!context.mounted) return;
+  await Navigator.of(context).push<void>(
+    PageRouteBuilder<void>(
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, _, _) => NoteReaderPage(
+        body: body,
+        noteId: noteId,
+        scope: scope,
+        title: title,
+        app: app,
+        storedNote: storedNote,
+        prepared: prepared,
+        documentOffset: documentOffset,
+      ),
+    ),
+  );
+}
 
 /// Takes a snapshot only; deliberately has no NotesRepository or save callback.
 class NoteReaderPage extends StatefulWidget {
@@ -27,10 +78,14 @@ class NoteReaderPage extends StatefulWidget {
     required this.title,
     this.app,
     this.storedNote = true,
+    this.prepared,
+    this.documentOffset,
   });
   final String body, noteId, scope, title;
   final AppController? app;
   final bool storedNote;
+  final PreparedNoteReader? prepared;
+  final int? documentOffset;
   @override
   State<NoteReaderPage> createState() => _NoteReaderPageState();
 }
@@ -39,13 +94,26 @@ class _NoteReaderPageState extends State<NoteReaderPage>
     with WidgetsBindingObserver {
   static const native = MethodChannel('org.huideng.counter/reader');
   List<ReaderParagraph> paragraphs = [];
+  late ReaderProgress progress;
+  bool get windows => defaultTargetPlatform == TargetPlatform.windows;
+  List<Map<String, dynamic>> voices = [];
+  String voice = '';
+  double? draggingProgress;
+  bool seeking = false, followScroll = false, readingMoved = true;
+  bool resumeAfterSeek = false;
+  Future<void> seekPause = Future.value();
   final keys = <int, GlobalKey>{};
   final centerKey = GlobalKey();
   int viewportAnchor = 0;
   Timer? sessionPoll;
+  Timer? resumeFollow;
+  bool pollingSession = false, manualScroll = false;
+  int followGeneration = 0, speechRangeEnd = 0;
   String? speechPath;
   bool sessionActive = false, restoredSession = false;
-  final scroll = ScrollController();
+  bool exiting = false, nativeExited = false;
+  late final scroll = _ReaderScrollController(initialPixels);
+  int? initialParagraphOffset;
   SharedPreferences? prefs;
   Timer? debounce;
   bool controls = false,
@@ -56,7 +124,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       loading = true,
       starting = false,
       leaving = false;
-  double fontSize = 22,
+  double fontSize = NoteTypography.defaultSize,
       brightness = .65,
       lineHeight = 2.05,
       paragraphSpacing = 10,
@@ -95,18 +163,19 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       v is num && v.isFinite ? v.toDouble().clamp(low, high) : fallback;
   Future<void> init() async {
     try {
-      paragraphs = widget.body.length < 100000
-          ? readerParagraphs(widget.body)
-          : await compute(readerParagraphs, widget.body);
-      prefs = await SharedPreferences.getInstance();
+      final prepared =
+          widget.prepared ?? await PreparedNoteReader.load(widget.body);
+      paragraphs = prepared.paragraphs;
+      prefs = prepared.preferences;
       final s = jsonDecode(prefs!.getString(settingsKey) ?? '{}') as Map;
-      fontSize = bounded(s['size'], 22, 12, 40);
+      fontSize = NoteTypography.normalizeSize(s['size']);
       brightness = bounded(s['brightness'], .65, .05, 1);
       lineHeight = bounded(s['line'], 2.05, 1.2, 2.6);
       paragraphSpacing = bounded(s['paragraph'], 10, 0, 32);
       spacing = bounded(s['spacing'], 0, -.5, 2);
       rate = normalizeReaderRate(bounded(s['rate'], 1, .3, 3));
       repeat = s['repeat'] == true;
+      voice = s['voice'] as String? ?? '';
       locked = s['locked'] != false;
       theme = ['dark', 'paper', 'light'].contains(s['theme'])
           ? s['theme']
@@ -131,17 +200,47 @@ class _NoteReaderPageState extends State<NoteReaderPage>
     }
     if (!mounted) return;
     if (paragraphs.isEmpty) paragraphs = [ReaderParagraph([])];
+    progress = ReaderProgress(paragraphs);
+    if (widget.documentOffset != null) {
+      var remaining = widget.documentOffset!;
+      reading = 0;
+      for (var i = 0; i < paragraphs.length; i++) {
+        reading = i;
+        final length =
+            paragraphs[i].runs.fold<int>(
+              0,
+              (sum, run) =>
+                  sum +
+                  (run['insert'] is String
+                      ? (run['insert'] as String).length
+                      : 1),
+            ) +
+            (widget.body.length < 100000 ? 1 : 0);
+        if (remaining < length) break;
+        remaining -= length;
+      }
+      initialParagraphOffset = remaining;
+      paragraphFraction = 0;
+    }
     viewportAnchor = reading;
+    // Prepared entries reach this synchronously, before their first build.
+    loading = false;
+    if (widget.prepared == null) setState(() {});
+    unawaited(initSpeech());
+    // Keep system insets unchanged across the mode switch. Changing immersive
+    // mode here relayouts both routes and can expose a blank platform frame.
+  }
+
+  Future<void> initSpeech() async {
+    if (windows) await loadVoices();
+    if (!mounted || exiting) return;
     await pollSession();
-    if (!mounted) return;
+    if (!mounted || exiting) return;
     sessionPoll = Timer.periodic(
-      const Duration(seconds: 1),
+      const Duration(milliseconds: 100),
       (_) => pollSession(),
     );
-    setState(() => loading = false);
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     await callNative('brightness', brightness, true);
-    WidgetsBinding.instance.addPostFrameCallback((_) => restoreReading());
   }
 
   Future<dynamic> callNative(
@@ -150,28 +249,49 @@ class _NoteReaderPageState extends State<NoteReaderPage>
     bool quiet = false,
   ]) async {
     try {
-      return await native
-          .invokeMethod(
-            method,
-            method == 'control'
-                ? <String, dynamic>{
-                    ...?(args as Map<String, dynamic>?),
-                    'scope': widget.scope,
-                    'noteId': widget.noteId,
-                  }
-                : args,
-          )
+      final arguments = method == 'control'
+          ? <String, dynamic>{
+              ...?(args as Map<String, dynamic>?),
+              'scope': widget.scope,
+              'noteId': widget.noteId,
+            }
+          : args;
+      return await (windows
+              ? WindowsReaderSpeech.instance.invoke(
+                  method,
+                  arguments,
+                  paragraphs: paragraphs,
+                )
+              : native.invokeMethod(method, arguments))
           .timeout(const Duration(seconds: 15));
     } catch (e) {
       if (!quiet && mounted) {
         setState(
-          () => error = e is PlatformException
+          () => error = windows
+              ? WindowsReaderSpeech.errorText(e)
+              : e is PlatformException
               ? e.message
               : '此设备暂不能朗读，请检查系统离线语音设置。',
         );
       }
       return null;
     }
+  }
+
+  Future<void> loadVoices() async {
+    final result = await callNative('voices');
+    if (!mounted || result is! List) return;
+    setState(() {
+      voices = result.map((v) => Map<String, dynamic>.from(v as Map)).toList();
+      if (!voices.any((v) => v['id'] == voice)) voice = '';
+      if (!voices.any(
+        (v) => (v['language'] as String? ?? '').startsWith('zh'),
+      )) {
+        error = '当前Windows系统未安装可用的中文语音。';
+      } else {
+        error = null;
+      }
+    });
   }
 
   Map<String, dynamic> anchor(int i) => {
@@ -192,6 +312,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       'theme': theme,
       'font': font,
       'language': language,
+      'voice': voice,
     });
     final p = jsonEncode({
       'read': anchor(reading),
@@ -211,15 +332,19 @@ class _NoteReaderPageState extends State<NoteReaderPage>
   }
 
   void onScroll() {
+    if (followScroll || seeking || playing) return;
     debounce?.cancel();
     debounce = Timer(const Duration(milliseconds: 300), () {
       capture();
+      readingMoved = true;
       persist();
     });
   }
 
   void capture() {
-    if (loading || !scroll.hasClients) return;
+    if (loading || seeking || followScroll || playing || !scroll.hasClients) {
+      return;
+    }
     for (final i in keys.keys.toList()..sort()) {
       final box = keys[i]?.currentContext?.findRenderObject();
       if (box is RenderBox && box.hasSize) {
@@ -236,6 +361,15 @@ class _NoteReaderPageState extends State<NoteReaderPage>
 
   void restoreReading() {
     if (!mounted || !scroll.hasClients) return;
+    if (playing) {
+      if (!manualScroll) {
+        followScroll = true;
+        unawaited(
+          alignSpeech(speaking, speechOffset, false, ++followGeneration),
+        );
+      }
+      return;
+    }
     final box = keys[reading]?.currentContext?.findRenderObject();
     if (box is RenderBox && box.hasSize) {
       final y = box.localToGlobal(Offset.zero).dy;
@@ -246,6 +380,39 @@ class _NoteReaderPageState extends State<NoteReaderPage>
         ),
       );
     }
+  }
+
+  double? initialPixels(double pixels) {
+    final box = keys[reading]?.currentContext?.findRenderObject();
+    if (box is! _ReaderParagraphBox || !box.hasSize) return null;
+    var within = paragraphFraction * box.layoutHeight;
+    final offset = initialParagraphOffset;
+    if (offset != null) {
+      RenderParagraph? text;
+      void findText(RenderObject child) {
+        if (child is RenderParagraph) {
+          text ??= child;
+        } else {
+          child.visitChildren(findText);
+        }
+      }
+
+      box.visitChildren(findText);
+      if (text != null) {
+        final caret = text!.getOffsetForCaret(
+          TextPosition(offset: offset),
+          Rect.zero,
+        );
+        within = paragraphSpacing / 2 + caret.dy;
+        paragraphFraction = box.layoutHeight == 0
+            ? 0
+            : (within / box.layoutHeight).clamp(0, .99);
+      }
+    }
+    final viewport = RenderAbstractViewport.of(box);
+    return pixels +
+        box.localToGlobal(Offset.zero, ancestor: viewport).dy +
+        within;
   }
 
   void setting(VoidCallback action, {bool layout = false}) {
@@ -281,34 +448,207 @@ class _NoteReaderPageState extends State<NoteReaderPage>
   }
 
   Future<void> pollSession() async {
-    final result = await callNative('snapshot', {
-      'scope': widget.scope,
-      'noteId': widget.noteId,
-    }, true);
-    if (!mounted || result is! Map || result.isEmpty || paragraphs.isEmpty) {
+    if (seeking || pollingSession) return;
+    pollingSession = true;
+    final requestSequence = sequence;
+    try {
+      final result = await callNative('snapshot', {
+        'scope': widget.scope,
+        'noteId': widget.noteId,
+      }, true);
+      if (!mounted ||
+          requestSequence != sequence ||
+          seeking ||
+          result is! Map ||
+          result.isEmpty ||
+          paragraphs.isEmpty) {
+        return;
+      }
+      if (result['active'] != true && restoredSession && !sessionActive) return;
+      final restoring = !restoredSession;
+      restoredSession = true;
+      sessionActive = result['active'] == true;
+      final wasPlaying = playing;
+      setState(() {
+        speaking = (result['index'] as num? ?? 0).toInt().clamp(
+          0,
+          paragraphs.length - 1,
+        );
+        speechOffset = (result['offset'] as num? ?? 0).toInt().clamp(
+          0,
+          paragraphs[speaking].text.length,
+        );
+        speechRangeEnd = (result['rangeEnd'] as num? ?? speechOffset + 1)
+            .toInt()
+            .clamp(speechOffset, paragraphs[speaking].text.length);
+        playing = result['playing'] == true;
+        speechOffset = readerTextBoundary(
+          paragraphs[speaking].text,
+          speechOffset,
+        );
+        speechRangeEnd = readerTextBoundary(
+          paragraphs[speaking].text,
+          speechRangeEnd,
+          end: true,
+        );
+        if (sessionActive) {
+          rate = normalizeReaderRate(
+            (result['rate'] as num? ?? rate).toDouble(),
+          );
+        }
+        if ((result['error'] as String? ?? '').isNotEmpty) {
+          error = result['error'];
+        }
+      });
+      if ((playing && speechRangeEnd > speechOffset) ||
+          (!playing && wasPlaying) ||
+          (restoring && sessionActive && widget.documentOffset == null)) {
+        readingMoved = false;
+        showPosition(speaking, speechOffset, smooth: playing);
+      }
+    } finally {
+      pollingSession = false;
+    }
+  }
+
+  bool onReaderScroll(ScrollNotification notification) {
+    if (notification.depth != 0 || !playing) return false;
+    final userStarted =
+        notification is ScrollStartNotification &&
+            notification.dragDetails != null ||
+        notification is UserScrollNotification &&
+            notification.direction != ScrollDirection.idle;
+    if (userStarted) {
+      manualScroll = true;
+      followGeneration++;
+      followScroll = false;
+    }
+    if (manualScroll) {
+      resumeFollow?.cancel();
+      resumeFollow = Timer(const Duration(seconds: 3), () {
+        manualScroll = false;
+        if (mounted && playing) {
+          showPosition(speaking, speechOffset, smooth: true);
+        }
+      });
+    }
+    return false;
+  }
+
+  RenderParagraph? paragraphText(RenderObject root) {
+    if (root is RenderParagraph) return root;
+    RenderParagraph? found;
+    root.visitChildren((child) {
+      found ??= paragraphText(child);
+    });
+    return found;
+  }
+
+  Future<void> alignSpeech(
+    int index,
+    int offset,
+    bool smooth,
+    int generation,
+  ) async {
+    if (!mounted || generation != followGeneration || !scroll.hasClients) {
       return;
     }
-    if (result['active'] != true && restoredSession && !sessionActive) return;
-    restoredSession = true;
-    sessionActive = result['active'] == true;
-    setState(() {
-      speaking = (result['index'] as num? ?? 0).toInt().clamp(
-        0,
-        paragraphs.length - 1,
-      );
-      speechOffset = (result['offset'] as num? ?? 0).toInt();
-      playing = result['playing'] == true;
-      if (sessionActive) {
-        rate = normalizeReaderRate((result['rate'] as num? ?? rate).toDouble());
+    final box = keys[index]?.currentContext?.findRenderObject();
+    final text = box == null ? null : paragraphText(box);
+    if (text == null || !text.hasSize) {
+      followScroll = false;
+      return;
+    }
+    final viewport = RenderAbstractViewport.of(text) as RenderBox;
+    final caret = text.getOffsetForCaret(
+      TextPosition(offset: paragraphs[index].layoutOffset(offset)),
+      Rect.zero,
+    );
+    final y = text.localToGlobal(caret, ancestor: viewport).dy;
+    final target = (scroll.offset + y - viewport.size.height * .45).clamp(
+      scroll.position.minScrollExtent,
+      scroll.position.maxScrollExtent,
+    );
+    // A small dead band prevents word-by-word jitter on the same line.
+    if ((target - scroll.offset).abs() < 8) {
+      followScroll = false;
+      return;
+    }
+    try {
+      if (smooth) {
+        await scroll.animateTo(
+          target,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+      } else {
+        scroll.jumpTo(target);
       }
-      if ((result['error'] as String? ?? '').isNotEmpty) {
-        error = result['error'];
+    } finally {
+      if (generation == followGeneration) followScroll = false;
+    }
+  }
+
+  void showPosition(int index, int offset, {bool smooth = false}) {
+    if (!mounted) return;
+    if (smooth && manualScroll) return;
+    debounce?.cancel();
+    final changed = reading != index || speechOffset != offset;
+    if (smooth && followScroll && !changed) return;
+    followScroll = true;
+    final generation = ++followGeneration;
+    setState(() {
+      reading = index;
+      final length = paragraphs[index].text.length;
+      paragraphFraction = length == 0 ? 0 : (offset / length).clamp(0, 1);
+      if (keys[index]?.currentContext == null) {
+        viewportAnchor = index;
+        keys.clear();
+        if (scroll.hasClients) scroll.jumpTo(0);
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != followGeneration) return;
+      if (!smooth && !playing) {
+        restoreReading();
+        followScroll = false;
+      } else {
+        unawaited(alignSpeech(index, offset, smooth, generation));
       }
     });
   }
 
+  void beginSeek(double value) {
+    sequence++;
+    resumeFollow?.cancel();
+    manualScroll = false;
+    resumeAfterSeek = playing;
+    seeking = true;
+    debounce?.cancel();
+    setState(() => draggingProgress = value);
+    seekPause = pauseSpeech();
+  }
+
+  Future<void> finishSeek(double value) async {
+    await seekPause;
+    await stop();
+    if (!mounted) return;
+    final position = progress.position(value);
+    speaking = position.index;
+    speechOffset = position.offset;
+    readingMoved = true;
+    showPosition(position.index, position.offset);
+    setState(() {
+      draggingProgress = null;
+      seeking = false;
+    });
+    await persist();
+    if (resumeAfterSeek) await play();
+  }
+
   Future<void> play() async {
     if (starting) return;
+    sequence++;
     setState(() {
       starting = true;
       error = null;
@@ -318,13 +658,19 @@ class _NoteReaderPageState extends State<NoteReaderPage>
         'scope': widget.scope,
         'noteId': widget.noteId,
       }, true);
-      if (session is Map &&
+      if (!readingMoved &&
+          session is Map &&
           session['active'] == true &&
           session['index'] == speaking &&
           session['offset'] == speechOffset) {
         await callNative('control', {'action': 'resume'});
       } else {
-        if (speechPath == null) {
+        final position = progress.position(
+          progress.fraction(reading, paragraphFraction),
+        );
+        speaking = position.index;
+        speechOffset = position.offset;
+        if (!windows && speechPath == null) {
           final root = await getApplicationSupportDirectory();
           final id = sha256.convert(
             utf8.encode(
@@ -348,8 +694,10 @@ class _NoteReaderPageState extends State<NoteReaderPage>
           'rate': rate,
           'repeat': repeat,
           'language': language,
+          'voice': voice,
         });
       }
+      readingMoved = false;
       await pollSession();
     } finally {
       if (mounted) setState(() => starting = false);
@@ -357,18 +705,25 @@ class _NoteReaderPageState extends State<NoteReaderPage>
   }
 
   Future<void> pauseSpeech() async {
-    await callNative('control', {'action': 'pause'}, true);
+    await callNative('control', {'action': 'pause'});
     await pollSession();
     await persist();
   }
 
   Future<void> stop() async {
-    await callNative('control', {'action': 'stop'}, true);
-    if (mounted) setState(() => playing = false);
+    sequence++;
+    await callNative('control', {'action': 'stop'});
+    if (mounted) {
+      setState(() {
+        playing = false;
+        sessionActive = false;
+      });
+    }
     await persist();
   }
 
   Future<void> skip(int delta) async {
+    sequence++;
     if (sessionActive) {
       await callNative('control', {'action': delta < 0 ? 'previous' : 'next'});
       await pollSession();
@@ -377,19 +732,26 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       speechOffset = 0;
       if (mounted) setState(() {});
     }
+    showPosition(speaking, speechOffset);
+    readingMoved = !sessionActive;
     await persist();
   }
 
   Future<void> configureSpeech() async {
+    sequence++;
     await callNative('control', {
       'action': 'configure',
       'rate': rate,
       'repeat': repeat,
       'language': language,
-    }, true);
+      'voice': voice,
+    });
   }
 
   Future<void> leave() async {
+    if (exiting) return;
+    exiting = true;
+    sessionPoll?.cancel();
     capture();
     await persist();
     try {
@@ -398,7 +760,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       debugPrint('Reader typography refresh: $e');
     }
     await callNative('exit', null, true);
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    nativeExited = true;
     if (mounted) {
       setState(() => leaving = true);
       await WidgetsBinding.instance.endOfFrame;
@@ -416,12 +778,13 @@ class _NoteReaderPageState extends State<NoteReaderPage>
 
   @override
   void dispose() {
+    resumeFollow?.cancel();
+    followGeneration++;
     debounce?.cancel();
     unawaited(persist());
     activeId = null;
     sessionPoll?.cancel();
-    unawaited(callNative('exit', null, true));
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    if (!nativeExited) unawaited(callNative('exit', null, true));
     scroll.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -431,42 +794,66 @@ class _NoteReaderPageState extends State<NoteReaderPage>
     final base = TextStyle(
       color: foreground,
       fontSize: fontSize,
-      height: lineHeight,
+      height: NoteTypography.textHeight(fontSize, lineHeight),
       letterSpacing: spacing,
       fontFamily: font == 'source' ? 'SourceHanSans' : null,
     );
-    return Container(
-      key: keys.putIfAbsent(index, () => GlobalKey()),
-      padding: EdgeInsets.symmetric(vertical: paragraphSpacing / 2),
-      color: playing && index == speaking
-          ? Colors.amber.withValues(alpha: .18)
-          : null,
-      child: Text.rich(
-        TextSpan(
-          children: [
-            for (final r in p.runs)
-              if (r['insert'] is String)
-                TextSpan(
-                  text: r['insert'],
-                  style: base.copyWith(
-                    fontWeight: (r['attributes'] as Map?)?['bold'] == true
-                        ? FontWeight.bold
-                        : null,
-                    fontStyle: (r['attributes'] as Map?)?['italic'] == true
-                        ? FontStyle.italic
-                        : null,
-                    decoration: (r['attributes'] as Map?)?['underline'] == true
-                        ? TextDecoration.underline
-                        : null,
-                  ),
-                )
-              else
-                WidgetSpan(child: image((r['insert'] as Map)['image'])),
-          ],
+    return WindowsContentText(
+      independentSize: true,
+      child: _ReaderParagraphLayout(
+        key: keys.putIfAbsent(index, () => GlobalKey()),
+        child: Container(
+          padding: EdgeInsets.symmetric(vertical: paragraphSpacing / 2),
+          child: Text.rich(
+            TextSpan(children: speechSpans(p, index, base)),
+            key: ValueKey('reader-paragraph-$index'),
+            style: base,
+          ),
         ),
-        style: base,
       ),
     );
+  }
+
+  List<InlineSpan> speechSpans(ReaderParagraph p, int index, TextStyle base) {
+    final spans = <InlineSpan>[];
+    var offset = 0;
+    for (final run in p.runs) {
+      final value = run['insert'];
+      if (value is! String) {
+        spans.add(WidgetSpan(child: image((value as Map)['image'])));
+        continue;
+      }
+      final attributes = run['attributes'] as Map?;
+      final style = base.copyWith(
+        fontWeight: attributes?['bold'] == true ? FontWeight.bold : null,
+        fontStyle: attributes?['italic'] == true ? FontStyle.italic : null,
+        decoration: attributes?['underline'] == true
+            ? TextDecoration.underline
+            : null,
+      );
+      final start = (speechOffset - offset).clamp(0, value.length);
+      final end = (speechRangeEnd - offset).clamp(0, value.length);
+      if (playing && index == speaking && end > start) {
+        if (start > 0) {
+          spans.add(TextSpan(text: value.substring(0, start), style: style));
+        }
+        spans.add(
+          TextSpan(
+            text: value.substring(start, end),
+            style: style.copyWith(
+              backgroundColor: Colors.amber.withValues(alpha: .32),
+            ),
+          ),
+        );
+        if (end < value.length) {
+          spans.add(TextSpan(text: value.substring(end), style: style));
+        }
+      } else {
+        spans.add(TextSpan(text: value, style: style));
+      }
+      offset += value.length;
+    }
+    return spans;
   }
 
   Widget image(dynamic source) {
@@ -527,7 +914,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                   children: [
                     Expanded(
                       child: Text(
-                        '阅读进度：${((reading + paragraphFraction) / paragraphs.length * 100).round()}% · 朗读 ${speaking + 1}/${paragraphs.length} 段',
+                        '阅读进度：${(progress.fraction(reading, paragraphFraction) * 100).round()}% · 朗读 ${speaking + 1}/${paragraphs.length} 段',
                       ),
                     ),
                     IconButton(
@@ -568,6 +955,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                     TextButton(
                       onPressed: () async {
                         await stop();
+                        readingMoved = true;
                         speaking = reading;
                         speechOffset = 0;
                         await play();
@@ -593,10 +981,13 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                 slider(
                   '字号',
                   fontSize,
-                  12,
-                  40,
-                  28,
-                  (v) => setting(() => fontSize = v, layout: true),
+                  NoteTypography.minSize,
+                  NoteTypography.maxSize,
+                  NoteTypography.sizeDivisions,
+                  (v) => setting(
+                    () => fontSize = NoteTypography.normalizeSize(v),
+                    layout: true,
+                  ),
                 ),
                 slider('亮度', brightness, .05, 1, 19, (v) {
                   setting(() => brightness = v);
@@ -673,18 +1064,55 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                         await stop();
                         await callNative('settings');
                       },
-                      child: const Text('系统语音设置'),
+                      child: Text(windows ? '打开Windows语音设置' : '系统语音设置'),
                     ),
-                    TextButton(
-                      onPressed: () async {
-                        await stop();
-                        await callNative('install');
-                      },
-                      child: const Text('安装离线语音包'),
-                    ),
+                    if (!windows)
+                      TextButton(
+                        onPressed: () async {
+                          await stop();
+                          await callNative('install');
+                        },
+                        child: const Text('安装离线语音包'),
+                      ),
                   ],
                 ),
-                const Text('需要手机已安装对应语言的离线音色。部分引擎暂停后会从当前句或段开头继续。'),
+                if (windows)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: DropdownButton<String>(
+                          isExpanded: true,
+                          value: voice,
+                          items: [
+                            const DropdownMenuItem(
+                              value: '',
+                              child: Text('自动选择系统语音'),
+                            ),
+                            for (final v in voices)
+                              DropdownMenuItem(
+                                value: v['id'] as String,
+                                child: Text(
+                                  '${v['name']} (${v['language']})',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                          ],
+                          onChanged: (value) {
+                            if (value == null) return;
+                            setting(() => voice = value);
+                            configureSpeech();
+                          },
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: loadVoices,
+                        tooltip: '刷新系统语音',
+                        icon: const Icon(Icons.refresh),
+                      ),
+                    ],
+                  ),
+                if (!windows)
+                  const Text('需要手机已安装对应语言的离线音色。部分引擎暂停后会从当前句或段开头继续。'),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('防误编辑'),
@@ -777,6 +1205,7 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       ),
     );
     if (!mounted || hit == null) return;
+    readingMoved = true;
     setState(() {
       reading = hit;
       viewportAnchor = hit;
@@ -848,12 +1277,17 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                     BarAction(
                       '阅读设置',
                       showReaderSettings,
-                      color: const Color(0xff90caf9),
+                      icon: Icons.chrome_reader_mode_outlined,
+                      visualScale: .85,
                     ),
-                    BarAction('返回', leave),
+                    BarAction('返回', leave, visualScale: .85),
                   ],
                   menu: PopupMenuButton<String>(
-                    icon: Icon(Icons.more_horiz, color: foreground),
+                    icon: Icon(
+                      Icons.more_horiz,
+                      color: foreground,
+                      size: 24 * 1.12,
+                    ),
                     onSelected: (action) async {
                       if (action == 'search') {
                         await searchReader();
@@ -1002,41 +1436,75 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                     : GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onDoubleTap: showReaderControls,
-                        child: CustomScrollView(
-                          controller: scroll,
-                          center: centerKey,
-                          slivers: [
-                            SliverList.builder(
-                              itemCount: viewportAnchor,
-                              itemBuilder: (_, i) => Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                ),
-                                child: paragraph(
-                                  paragraphs[viewportAnchor - i - 1],
-                                  viewportAnchor - i - 1,
-                                ),
-                              ),
-                            ),
-                            SliverList(
-                              key: centerKey,
-                              delegate: SliverChildBuilderDelegate(
-                                (_, i) => Padding(
+                        child: NotificationListener<ScrollNotification>(
+                          onNotification: onReaderScroll,
+                          child: CustomScrollView(
+                            controller: scroll,
+                            center: centerKey,
+                            slivers: [
+                              SliverList.builder(
+                                itemCount: viewportAnchor,
+                                itemBuilder: (_, i) => Padding(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 12,
                                   ),
                                   child: paragraph(
-                                    paragraphs[viewportAnchor + i],
-                                    viewportAnchor + i,
+                                    paragraphs[viewportAnchor - i - 1],
+                                    viewportAnchor - i - 1,
                                   ),
                                 ),
-                                childCount: paragraphs.length - viewportAnchor,
                               ),
-                            ),
-                          ],
+                              SliverList(
+                                key: centerKey,
+                                delegate: SliverChildBuilderDelegate(
+                                  (_, i) => Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                    ),
+                                    child: paragraph(
+                                      paragraphs[viewportAnchor + i],
+                                      viewportAnchor + i,
+                                    ),
+                                  ),
+                                  childCount:
+                                      paragraphs.length - viewportAnchor,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
               ),
+              if (!loading)
+                Row(
+                  children: [
+                    IconButton(
+                      tooltip: '阅读设置',
+                      onPressed: showReaderSettings,
+                      icon: Icon(Icons.tune, color: foreground),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        key: const ValueKey('reader-progress'),
+                        value:
+                            draggingProgress ??
+                            progress.fraction(reading, paragraphFraction),
+                        onChangeStart: starting ? null : beginSeek,
+                        onChanged: starting
+                            ? null
+                            : (v) => setState(() => draggingProgress = v),
+                        onChangeEnd: starting ? null : finishSeek,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 48,
+                      child: Text(
+                        '${((draggingProgress ?? progress.fraction(reading, paragraphFraction)) * 100).round()}%',
+                        style: TextStyle(color: foreground),
+                      ),
+                    ),
+                  ],
+                ),
               if (settingsOpen && !loading) panel(),
             ],
           ),
@@ -1044,6 +1512,66 @@ class _NoteReaderPageState extends State<NoteReaderPage>
       ),
     ),
   );
+}
+
+/// Restore after paragraph layout but before paint, avoiding a visible jump on
+/// the next frame. Returning false asks the viewport to relayout immediately.
+class _ReaderParagraphLayout extends SingleChildRenderObjectWidget {
+  const _ReaderParagraphLayout({super.key, required super.child});
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _ReaderParagraphBox();
+}
+
+class _ReaderParagraphBox extends RenderProxyBox {
+  double layoutHeight = 0;
+  @override
+  void performLayout() {
+    super.performLayout();
+    layoutHeight = size.height;
+  }
+}
+
+class _ReaderScrollController extends ScrollController {
+  _ReaderScrollController(this.initialPixels);
+  final double? Function(double) initialPixels;
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _ReaderScrollPosition(
+    physics: physics,
+    context: context,
+    oldPosition: oldPosition,
+    initialPixels: initialPixels,
+  );
+}
+
+class _ReaderScrollPosition extends ScrollPositionWithSingleContext {
+  _ReaderScrollPosition({
+    required super.physics,
+    required super.context,
+    super.oldPosition,
+    required this.initialPixels,
+  });
+  final double? Function(double) initialPixels;
+  bool restored = false;
+  @override
+  bool applyContentDimensions(double minScrollExtent, double maxScrollExtent) {
+    if (!restored) {
+      final target = initialPixels(pixels);
+      if (target != null) {
+        restored = true;
+        final bounded = target.clamp(minScrollExtent, maxScrollExtent);
+        if ((bounded - pixels).abs() > .5) {
+          correctPixels(bounded);
+          return false;
+        }
+      }
+    }
+    return super.applyContentDimensions(minScrollExtent, maxScrollExtent);
+  }
 }
 
 Future<void> writeReaderSpeechFile(Map<String, String> input) async {

@@ -75,8 +75,13 @@ class ChatNotifications {
         .where((m) => m['id'] == messageId && m['recalled_at'] == null)
         .firstOrNull;
     if (message == null || message['sender_id'] == user || closed) return;
-    // A muted group still notifies for members marked "特别关注" on this device.
-    if (room['muted'] == true) {
+    final mentionIds = message['mentions'];
+    final mentioned =
+        message['mention_all'] == true ||
+        (mentionIds is List && mentionIds.contains(user));
+    // A muted group still notifies for members marked "特别关注" on this
+    // device, and now also for anyone this message actually @mentions.
+    if (room['muted'] == true && !mentioned) {
       final view = (await (await ChatStore.open(user)).roomViews())[roomId];
       final special = [for (final id in view?['specialFollow'] as List? ?? []) '$id'];
       if (!special.contains(message['sender_id'])) return;
@@ -115,7 +120,7 @@ class ChatNotifications {
         : String.fromCharCodes(body.runes.take(160));
     await plugin.show(
       1,
-      room['title'] as String? ?? '慧灯计数器',
+      '${mentioned ? '[有人@你] ' : ''}${room['title'] as String? ?? '慧灯计数器'}',
       settings.preview
           ? (room['kind'] == 'group'
                 ? '${message['nickname'] ?? ''}：$preview'

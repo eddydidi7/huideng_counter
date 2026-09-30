@@ -4,13 +4,14 @@ import {verifyPart,VERIFY_PART_BYTES} from './verify_stream.ts';
 const url=Deno.env.get('SUPABASE_URL')!;
 const secret=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const client=createClient(url,secret,{auth:{persistSession:false,autoRefreshToken:false}});
-const objectUrl=(f:ResourceFile)=>`${url}/storage/v1/object/public-resources/${f.object_key.split('/').map(encodeURIComponent).join('/')}`;
+const bucket=(f:ResourceFile)=>f.storage_bucket==='group-files'?'group-files':'public-resources';
+const objectUrl=(f:ResourceFile)=>`${url}/storage/v1/object/${bucket(f)}/${f.object_key.split('/').map(encodeURIComponent).join('/')}`;
 const headers={Authorization:`Bearer ${secret}`,apikey:secret};
 async function read(f:ResourceFile){const response=await fetch(objectUrl(f),{headers,signal:AbortSignal.timeout(30000)});if(!response.ok)throw Error('VERIFY_FAILED');const blob=new Uint8Array(await response.arrayBuffer());if(blob.length!==f.file_size||await checksum(blob)!==f.checksum)throw Error('VERIFY_FAILED');return blob;}
 Deno.serve(createHandler({
  signingSecret:secret,endpoint:`${url}/functions/v1/public-resources`,
  authenticate:async(token)=>{const {data,error}=await client.auth.getUser(token);return !error&&data.user&&!data.user.is_anonymous?data.user.id:null;},
- rpc:async(actor,action,data)=>{const r=actor==='__public__'?await client.rpc('public_resource_guest_v1',{p_action:action,p_data:data}):action==='preview'?await client.rpc('public_resource_preview',{p_actor:actor,p_id:data.id}):action==='share'?await client.rpc('public_resource_share_create',{p_actor:actor,p_id:data.id}):await client.rpc('public_resources_service_v1',{p_actor:actor,p_action:action,p_data:data});if(r.error)throw r.error;return r.data;},
+ rpc:async(actor,action,data)=>{const r=action.startsWith('group.')?await client.rpc('shared_file_service_v1',{p_actor:actor,p_action:action,p_data:data}):actor==='__public__'?await client.rpc('public_resource_guest_v1',{p_action:action,p_data:data}):action==='preview'?await client.rpc('public_resource_preview',{p_actor:actor,p_id:data.id}):action==='share'?await client.rpc('public_resource_share_create',{p_actor:actor,p_id:data.id}):await client.rpc('public_resources_service_v1',{p_actor:actor,p_action:action,p_data:data});if(r.error)throw r.error;return r.data;},
  read,
  resumable:async(f)=>{
  // Recover an upload whose final acknowledgement was lost or whose TUS URL expired.
@@ -30,6 +31,13 @@ Deno.serve(createHandler({
  return verifyPart(bytes,offset,f.file_size,(f.verify_state??null) as number[]|null,f.checksum);
  },
  put:async(f,bytes)=>{const response=await fetch(objectUrl(f),{method:'POST',headers:{...headers,'Content-Type':f.mime_type,'x-upsert':'false','cache-control':'no-store'},body:bytes as BodyInit,signal:AbortSignal.timeout(30000)});if(!response.ok){await read(f);} },
- preview:async(f,large)=>{const {data,error}=await client.storage.from('public-resources').createSignedUrl(f.object_key,120,{transform:{width:large?1440:480,height:large?1440:480,resize:'contain',quality:large?80:65}});if(error)throw error;return data.signedUrl;},
- download:async(f)=>{const {data,error}=await client.storage.from('public-resources').createSignedUrl(f.object_key,120,{download:f.file_name});if(error)throw error;return data.signedUrl;}
+ preview:async(f,large)=>{const {data,error}=await client.storage.from(bucket(f)).createSignedUrl(f.object_key,120,{transform:{width:large?1440:480,height:large?1440:480,resize:'contain',quality:large?80:65}});if(error)throw error;return data.signedUrl;},
+ download:async(f)=>{const {data,error}=await client.storage.from(bucket(f)).createSignedUrl(f.object_key,120,{download:f.file_name});if(error)throw error;return data.signedUrl;},
+ cleanup:async()=>{
+   const {data,error}=await client.rpc('file_gc_v1',{p_action:'claim'});if(error)throw error;
+   for(const job of data){
+     const removed=await client.storage.from(job.bucket).remove([job.object_key]);if(removed.error)throw removed.error;
+     const ack=await client.rpc('file_gc_v1',{p_action:'ack',p_data:job});if(ack.error)throw ack.error;
+   }
+ }
 }));

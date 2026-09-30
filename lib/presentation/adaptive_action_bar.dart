@@ -2,10 +2,18 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 class BarAction {
-  const BarAction(this.label, this.onPressed, {this.color});
+  const BarAction(
+    this.label,
+    this.onPressed, {
+    this.color,
+    this.icon,
+    this.visualScale = 1,
+  });
   final String label;
   final VoidCallback? onPressed;
   final Color? color;
+  final IconData? icon;
+  final double visualScale;
 }
 
 /// Allocate the whole row by measured text width, preserving 48dp hit targets.
@@ -60,17 +68,25 @@ class AdaptiveActionBar extends StatelessWidget {
           SizedBox(
             width: sizes[i] + spare / actions.length,
             height: math.max(48, scale.scale(font) * 1.4),
-            child: TextButton(
-              onPressed: a.onPressed,
-              style: TextButton.styleFrom(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(48, 48),
-                foregroundColor:
-                    a.color ?? Theme.of(context).colorScheme.onSurface,
-                textStyle: base.copyWith(fontSize: font),
-              ),
-              child: Text(a.label, maxLines: 1, softWrap: false),
-            ),
+            child: a.icon != null
+                ? IconButton(
+                    tooltip: a.label,
+                    onPressed: a.onPressed,
+                    iconSize: font * a.visualScale,
+                    color: a.color ?? Theme.of(context).colorScheme.onSurface,
+                    icon: Icon(a.icon),
+                  )
+                : TextButton(
+                    onPressed: a.onPressed,
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(48, 48),
+                      foregroundColor:
+                          a.color ?? Theme.of(context).colorScheme.onSurface,
+                      textStyle: base.copyWith(fontSize: font * a.visualScale),
+                    ),
+                    child: Text(a.label, maxLines: 1, softWrap: false),
+                  ),
           ),
         );
       }

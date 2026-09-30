@@ -83,16 +83,56 @@ class NotesRepository {
   /// Category ("notebook") lives in source_meta, which already syncs with the
   /// note itself. Empty string means uncategorized.
   static String categoryOf(Map<String, Object?> row) {
+    return categoriesOf(row).firstOrNull ?? '';
+  }
+
+  static List<String> categoriesOf(Map<String, Object?> row) {
     try {
-      final name =
-          (jsonDecode(row['source_meta'] as String? ?? '{}') as Map)['notebook'];
-      return name is String ? name.trim() : '';
+      final meta = jsonDecode(row['source_meta'] as String? ?? '{}') as Map;
+      return <String>{
+        if (meta['notebook'] is String &&
+            (meta['notebook'] as String).trim().isNotEmpty)
+          (meta['notebook'] as String).trim(),
+        if (meta['notebooks'] is List)
+          for (final name in meta['notebooks'] as List)
+            if (name is String && name.trim().isNotEmpty) name.trim(),
+      }.toList();
     } catch (_) {
-      return '';
+      return [];
     }
   }
 
+  static bool isQuickAccess(Map<String, Object?> row) {
+    try {
+      return (jsonDecode(row['source_meta'] as String? ?? '{}')
+              as Map)['quick_access'] ==
+          true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> setQuickAccess(String id, bool enabled) async {
+    final note = await get(id);
+    final meta = Map<String, dynamic>.from(
+      jsonDecode(note['source_meta'] as String? ?? '{}') as Map,
+    );
+    if (enabled) {
+      meta['quick_access'] = true;
+    } else {
+      meta.remove('quick_access');
+    }
+    await save({...note, 'source_meta': jsonEncode(meta)}, touch: false);
+  }
+
   static String withCategory(Object? sourceMeta, String category) {
+    return withCategories(sourceMeta, [category]);
+  }
+
+  static String withCategories(
+    Object? sourceMeta,
+    Iterable<String> categories,
+  ) {
     Map<String, dynamic> meta;
     try {
       meta = Map<String, dynamic>.from(
@@ -101,10 +141,17 @@ class NotesRepository {
     } catch (_) {
       meta = {};
     }
-    if (category.trim().isEmpty) {
+    final names = categories
+        .map((c) => c.trim())
+        .where((c) => c.isNotEmpty)
+        .toSet()
+        .toList();
+    meta.remove('notebooks');
+    if (names.isEmpty) {
       meta.remove('notebook');
     } else {
-      meta['notebook'] = category.trim();
+      meta['notebook'] = names.first;
+      if (names.length > 1) meta['notebooks'] = names;
     }
     return jsonEncode(meta);
   }
@@ -117,8 +164,10 @@ class NotesRepository {
       columns: ['source_meta'],
       where: 'deletedAt IS NULL',
     )) {
-      final name = categoryOf(row);
-      counts[name] = (counts[name] ?? 0) + 1;
+      final names = categoriesOf(row);
+      for (final name in names.isEmpty ? [''] : names) {
+        counts[name] = (counts[name] ?? 0) + 1;
+      }
     }
     return counts;
   }
@@ -126,7 +175,10 @@ class NotesRepository {
   /// Includes trashed notes so a restored note never revives a deleted name.
   Future<List<String>> idsInCategory(String category) async => [
     for (final row in await db.query('notes', columns: ['id', 'source_meta']))
-      if (categoryOf(row) == category) row['id'] as String,
+      if (category.isEmpty
+          ? categoriesOf(row).isEmpty
+          : categoriesOf(row).contains(category))
+        row['id'] as String,
   ];
 
   /// Only the category changes; favorite, archive, pin and updatedAt are kept,
@@ -134,10 +186,42 @@ class NotesRepository {
   Future<void> setCategory(Iterable<String> ids, String category) async {
     for (final id in ids) {
       final note = await get(id);
-      if (categoryOf(note) == category.trim()) continue;
+      if (categoriesOf(note).length <= 1 &&
+          categoryOf(note) == category.trim()) {
+        continue;
+      }
       await save({
         ...note,
         'source_meta': withCategory(note['source_meta'], category),
+      }, touch: false);
+    }
+  }
+
+  Future<void> addCategories(
+    Iterable<String> ids,
+    Iterable<String> categories,
+  ) async {
+    for (final id in ids) {
+      final note = await get(id);
+      await save({
+        ...note,
+        'source_meta': withCategories(note['source_meta'], [
+          ...categoriesOf(note),
+          ...categories,
+        ]),
+      }, touch: false);
+    }
+  }
+
+  Future<void> replaceCategory(String from, String to) async {
+    for (final id in await idsInCategory(from)) {
+      final note = await get(id);
+      await save({
+        ...note,
+        'source_meta': withCategories(
+          note['source_meta'],
+          categoriesOf(note).map((n) => n == from ? to : n),
+        ),
       }, touch: false);
     }
   }

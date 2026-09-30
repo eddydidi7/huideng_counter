@@ -1,15 +1,10 @@
-import 'package:flutter/widgets.dart';
+import 'post_title.dart';
 
 /// Display only: never writes generated text back to the author's title.
 String getPostDisplayTitle(Map post) {
   final title = (post['title'] as String? ?? '').trim();
   if (title.isNotEmpty) return title;
-  final body = (post['body'] as String? ?? '').trim().replaceAll(
-    RegExp(r'\s+'),
-    ' ',
-  );
-  final letters = body.characters;
-  return letters.length > 28 ? '${letters.take(28)}……' : body;
+  return prepareNewPostText('', post['body'] as String? ?? '').title;
 }
 
 String compactPostCount(dynamic raw) {

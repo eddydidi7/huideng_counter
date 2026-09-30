@@ -18,6 +18,7 @@ import '../core/app_controller.dart';
 import '../data/repositories/notes_repository.dart';
 import '../domain/large_note.dart';
 import 'note_reader_page.dart';
+import 'notes_page.dart' show NoteEditor;
 
 /// Existing Delta format, bounded editing document. No data is rewritten on open.
 class LargeNoteEditor extends StatefulWidget {
@@ -26,10 +27,17 @@ class LargeNoteEditor extends StatefulWidget {
     required this.app,
     required this.repository,
     required this.note,
+    this.siblings,
+    this.siblingIndex,
   });
   final AppController app;
   final NotesRepository repository;
   final Map<String, Object?> note;
+
+  /// Same source-list + position contract as NoteEditor.siblings, so
+  /// switching still respects whatever list this note was opened from.
+  final List<Map<String, Object?>>? siblings;
+  final int? siblingIndex;
   @override
   State<LargeNoteEditor> createState() => _LargeNoteEditorState();
 }
@@ -38,6 +46,9 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
     with WidgetsBindingObserver {
   List<String> chunks = [];
   quill.QuillController? editor;
+  var readerEditorKey = GlobalKey<quill.EditorState>();
+  final readerViewportKey = GlobalKey();
+  bool openingReader = false;
   StreamSubscription? changes;
   Timer? debounce;
   int page = 0, generation = 0, persisted = 0;
@@ -63,6 +74,7 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
     changes?.cancel();
     editor?.dispose();
     page = index;
+    readerEditorKey = GlobalKey<quill.EditorState>();
     final delta = (jsonDecode(chunks[page]) as List)
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
@@ -168,7 +180,25 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
     if (mounted) Navigator.pop(context);
   }
 
-  Future<void> read() async {
+  void handleSwipe(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity.abs() < 200) return;
+    unawaited(switchNote(velocity < 0 ? 1 : -1));
+  }
+
+  Future<void> switchNote(int direction) async {
+    final siblings = widget.siblings;
+    final index = widget.siblingIndex;
+    if (siblings == null || index == null) return;
+    final target = index + direction;
+    if (target < 0 || target >= siblings.length) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(target < 0 ? '已经是第一篇' : '已经是最后一篇')),
+        );
+      }
+      return;
+    }
     do {
       await save();
     } while (mounted &&
@@ -176,23 +206,69 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
         error == null &&
         generation != persisted);
     if (!mounted || error != null || rechunking) return;
-    await Navigator.push(
+    final next = await widget.repository.get(siblings[target]['id'] as String);
+    if (!mounted) return;
+    await Navigator.pushReplacement(
       context,
-      MaterialPageRoute(
-        builder: (_) => NoteReaderPage(
-          app: widget.app,
-          body: saved['body'] as String,
-          noteId: saved['id'] as String,
-          scope: widget.app.scopeId,
-          title: saved['title'] as String? ?? '',
-        ),
+      MaterialPageRoute<void>(
+        builder: (_) => (next['body'] as String? ?? '').length > 100000
+            ? LargeNoteEditor(
+                app: widget.app,
+                repository: widget.repository,
+                note: next,
+                siblings: siblings,
+                siblingIndex: target,
+              )
+            : NoteEditor(
+                app: widget.app,
+                repository: widget.repository,
+                note: next,
+                siblings: siblings,
+                siblingIndex: target,
+              ),
       ),
     );
-    final latest = await widget.repository.get(saved['id'] as String);
-    if (!mounted) return;
-    if (latest['body'] == saved['body']) {
-      setState(() => saved = latest);
-      if (latest['deletedAt'] != null) await leave();
+  }
+
+  Future<void> read() async {
+    if (openingReader) return;
+    openingReader = true;
+    try {
+      var documentOffset = visibleNoteOffset(
+        readerEditorKey,
+        readerViewportKey,
+      );
+      for (final chunk in chunks.take(page)) {
+        for (final op in jsonDecode(chunk) as List) {
+          documentOffset += op['insert'] is String
+              ? (op['insert'] as String).length
+              : 1;
+        }
+      }
+      do {
+        await save();
+      } while (mounted &&
+          !rechunking &&
+          error == null &&
+          generation != persisted);
+      if (!mounted || error != null || rechunking) return;
+      await openNoteReader(
+        context,
+        app: widget.app,
+        body: saved['body'] as String,
+        noteId: saved['id'] as String,
+        scope: widget.app.scopeId,
+        title: saved['title'] as String? ?? '',
+        documentOffset: documentOffset,
+      );
+      final latest = await widget.repository.get(saved['id'] as String);
+      if (!mounted) return;
+      if (latest['body'] == saved['body']) {
+        setState(() => saved = latest);
+        if (latest['deletedAt'] != null) await leave();
+      }
+    } finally {
+      openingReader = false;
     }
   }
 
@@ -347,15 +423,20 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
         title: AdaptiveActionBar(
           menuIndex: 1,
           actions: [
-            BarAction('阅读模式', read, color: const Color(0xff90caf9)),
+            BarAction(
+              '阅读模式',
+              read,
+              icon: Icons.chrome_reader_mode_outlined,
+              visualScale: .85,
+            ),
             // Completion is deliberately a normal text action, not an alert.
-            BarAction('完成', leave),
+            BarAction('完成', leave, visualScale: .85),
           ],
           menu: PopupMenuButton<String>(
-            icon: const Icon(
+            icon: Icon(
               Icons.more_horiz,
-              color: Color(0xff90caf9),
-              size: 30,
+              color: Theme.of(context).colorScheme.onSurface,
+              size: 30 * 1.12,
             ),
             constraints: const BoxConstraints(minWidth: 140),
             onSelected: action,
@@ -379,53 +460,59 @@ class _LargeNoteEditorState extends State<LargeNoteEditor>
       ),
       body: loading || rechunking
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Row(
-                  children: [
-                    IconButton(
-                      onPressed: page > 0 ? () => move(page - 1) : null,
-                      icon: const Icon(Icons.chevron_left),
-                    ),
-                    Expanded(
-                      child: Text(
-                        '第 ${page + 1} / ${chunks.length} 块 · 分段编辑',
-                        textAlign: TextAlign.center,
+          : GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragEnd: widget.siblings == null ? null : handleSwipe,
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      IconButton(
+                        onPressed: page > 0 ? () => move(page - 1) : null,
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      Expanded(
+                        child: Text(
+                          '第 ${page + 1} / ${chunks.length} 块 · 分段编辑',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: page + 1 < chunks.length
+                            ? () => move(page + 1)
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+                  Expanded(
+                    key: readerViewportKey,
+                    child: SharedRichEditor(
+                      readingScope: widget.app.scopeId,
+                      key: ValueKey(page),
+                      controller: editor!,
+                      config: quill.QuillEditorConfig(
+                        editorKey: readerEditorKey,
+                        embedBuilders: [NoteImageBuilder()],
+                        expands: true,
+                        padding: EdgeInsets.all(12),
                       ),
                     ),
-                    IconButton(
-                      onPressed: page + 1 < chunks.length
-                          ? () => move(page + 1)
-                          : null,
-                      icon: const Icon(Icons.chevron_right),
-                    ),
-                  ],
-                ),
-                Expanded(
-                  child: SharedRichEditor(
-                    readingScope: widget.app.scopeId,
-                    key: ValueKey(page),
+                  ),
+                  quill.QuillSimpleToolbar(
                     controller: editor!,
-                    config: quill.QuillEditorConfig(
-                      embedBuilders: [NoteImageBuilder()],
-                      expands: true,
-                      padding: EdgeInsets.all(12),
+                    config: const quill.QuillSimpleToolbarConfig(
+                      multiRowsDisplay: false,
                     ),
                   ),
-                ),
-                quill.QuillSimpleToolbar(
-                  controller: editor!,
-                  config: const quill.QuillSimpleToolbarConfig(
-                    multiRowsDisplay: false,
+                  SafeArea(
+                    top: false,
+                    child: Text(
+                      error ?? (generation == persisted ? '已本地保存' : '正在保存'),
+                    ),
                   ),
-                ),
-                SafeArea(
-                  top: false,
-                  child: Text(
-                    error ?? (generation == persisted ? '已本地保存' : '正在保存'),
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
     ),
   );

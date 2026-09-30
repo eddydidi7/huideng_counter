@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../core/app_controller.dart';
+import '../services/apk_files.dart';
 import '../services/app_release.dart';
 import 'app_update_page.dart';
 
@@ -13,14 +14,22 @@ class AppUpdateHost extends StatefulWidget {
   State<AppUpdateHost> createState() => _AppUpdateHostState();
 }
 
-class _AppUpdateHostState extends State<AppUpdateHost> {
-  static final Set<int> prompted = {};
+class _AppUpdateHostState extends State<AppUpdateHost>
+    with WidgetsBindingObserver {
+  final prompted = <int>{};
   Timer? timer;
-  bool checking = false, finished = false;
+  bool checking = false;
   @override
   void initState() {
     super.initState();
-    timer = Timer.periodic(const Duration(seconds: 10), (_) => check());
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => check());
+    timer = Timer.periodic(const Duration(minutes: 1), (_) => check());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) check();
   }
 
   Future<void> check() async {
@@ -31,68 +40,77 @@ class _AppUpdateHostState extends State<AppUpdateHost> {
         client == null ||
         nav == null ||
         checking ||
-        finished) {
+        !mounted) {
       return;
     }
     checking = true;
     try {
       final next = await AppRelease.forPlatform(client, platform);
       final installed = await InstalledApp.current();
-      debugPrint('[UPDATE_CHECK] currentVersionCode=${installed.versionCode} '
-          'latestVersionCode=${next?.code} updateAvailable=${next != null && next.code > installed.versionCode}');
-      finished = true;
-      timer?.cancel();
-      if (next == null || next.code <= installed.versionCode || !mounted) {
+      final code = installed.versionCode;
+      if (Platform.isAndroid) {
+        try {
+          await ApkFiles.cleanupUpdates(code);
+        } catch (_) {
+          /* Best-effort cache cleanup. */
+        }
+      }
+      debugPrint('[UPDATE_CHECK] currentVersionCode=$code '
+          'latestVersionCode=${next?.code} updateAvailable=${next != null && next.code > code}');
+      if (next == null || !next.shouldPromptFor(code) || !mounted) {
         return;
       }
-      final prefs = await SharedPreferences.getInstance();
-      final last = prefs.getInt('update_later_${next.code}') ?? 0;
-      if (!next.force &&
-          (prompted.contains(next.code) ||
-              DateTime.now().millisecondsSinceEpoch - last <
-                  const Duration(days: 1).inMilliseconds)) {
-        return;
-      }
-      prompted.add(next.code);
-      if (!mounted || !nav.mounted) return;
-      final yes = await showDialog<bool>(
-        context: nav.context,
-        barrierDismissible: !next.force,
-        builder: (ctx) => PopScope(
-          canPop: !next.force,
-          child: AlertDialog(
-            title: Text('发现新版本 ${next.name}'),
-            content: SingleChildScrollView(child: Text(next.notes)),
-            actions: [
-              if (!next.force)
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('稍后更新'),
-                ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('立即更新'),
-              ),
-            ],
-          ),
-        ),
-      );
-      if (yes == true && mounted) {
+      final force = next.requiredFor(code);
+      if (!force && !prompted.add(next.code)) return;
+      if (!nav.mounted) return;
+      if (force || next.autoDownload) {
         await nav.push(
           MaterialPageRoute<void>(
-            builder: (_) => AppUpdatePage(app: widget.app),
+            builder: (_) => AppUpdatePage(
+              app: widget.app,
+              initialRelease: next,
+              installedCode: code,
+              autoStart: next.autoDownload,
+            ),
           ),
         );
-      } else {
-        await prefs.setInt(
-          'update_later_${next.code}',
-          DateTime.now().millisecondsSinceEpoch,
+        return;
+      }
+      final yes = await showDialog<bool>(
+        context: nav.context,
+        builder: (ctx) => AlertDialog(
+          title: Text('发现新版本 ${next.name}'),
+          content: SingleChildScrollView(
+            child: Text(
+              '当前版本：${installed.versionName} ($code)\n最新版本：${next.name} (${next.code})\n发布时间：${next.publishedAt.toLocal()}\n${(next.size / 1048576).toStringAsFixed(1)} MB\n\n${next.notes}',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('稍后更新'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('立即更新'),
+            ),
+          ],
+        ),
+      );
+      if (yes == true && mounted && nav.mounted) {
+        await nav.push(
+          MaterialPageRoute<void>(
+            builder: (_) => AppUpdatePage(
+              app: widget.app,
+              initialRelease: next,
+              installedCode: code,
+              downloadOnOpen: true,
+            ),
+          ),
         );
       }
     } catch (_) {
-      // Offline checks must never block local use. Manual retry remains available.
-      finished = true;
-      timer?.cancel();
+      // Retry transient startup failures; never turn a failed query into "latest".
     } finally {
       checking = false;
     }
@@ -101,6 +119,7 @@ class _AppUpdateHostState extends State<AppUpdateHost> {
   @override
   void dispose() {
     timer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 

@@ -17,6 +17,17 @@ class ApkInstallerBridge(private val activity: MainActivity, messenger: BinaryMe
     init {
         channel.setMethodCallHandler { call, result ->
             try {
+                if (call.method == "network") {
+                    val manager = activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                    val wifi = if (Build.VERSION.SDK_INT >= 23) {
+                        manager.getNetworkCapabilities(manager.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+                    } else {
+                        @Suppress("DEPRECATION")
+                        (manager.activeNetworkInfo?.type == android.net.ConnectivityManager.TYPE_WIFI)
+                    }
+                    result.success(mapOf("wifi" to wifi, "metered" to manager.isActiveNetworkMetered))
+                    return@setMethodCallHandler
+                }
                 if (call.method == "current") {
                     val current = activity.packageManager.getPackageInfo(activity.packageName, 0)
                     result.success(mapOf("versionName" to current.versionName,
@@ -46,13 +57,13 @@ class ApkInstallerBridge(private val activity: MainActivity, messenger: BinaryMe
                             ?: throw IllegalArgumentException("Invalid APK")
                         @Suppress("DEPRECATION")
                         val installed = activity.packageManager.getPackageInfo(activity.packageName, android.content.pm.PackageManager.GET_SIGNATURES)
-                        require(candidate.packageName == activity.packageName)
+                        require(candidate.packageName == activity.packageName) { "安装包包名与当前应用不同" }
                         @Suppress("DEPRECATION")
                         require(candidate.signatures?.map { it.toCharsString() }?.toSet() == installed.signatures?.map { it.toCharsString() }?.toSet()
-                            && !candidate.signatures.isNullOrEmpty())
+                            && !candidate.signatures.isNullOrEmpty()) { "安装包签名与当前应用不同，无法覆盖升级" }
                         val code = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
                         val currentCode = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else installed.versionCode.toLong()
-                        require(code > currentCode)
+                        require(code > currentCode) { "安装包 versionCode 未高于当前版本" }
                         result.success(mapOf("versionCode" to code, "versionName" to candidate.versionName))
                     }
                     "install" -> {
@@ -65,7 +76,7 @@ class ApkInstallerBridge(private val activity: MainActivity, messenger: BinaryMe
                     }
                     else -> result.notImplemented()
                 }
-            } catch (e: Exception) { pending = null; result.error("APK_INSTALL", "无法打开安装包或系统安装设置", null) }
+            } catch (e: Exception) { pending = null; result.error("APK_INSTALL", e.message ?: "无法打开安装包或系统安装设置", null) }
         }
     }
     private fun checked(path: String): File {

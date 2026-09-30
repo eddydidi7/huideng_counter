@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../core/app_controller.dart';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'note_reader_page.dart';
 
 class PublishedNotesPage extends StatelessWidget {
   final AppController app;
@@ -49,19 +52,16 @@ class PublishedNotesPage extends StatelessWidget {
                         )?.toLocal().toString().split('.').first ??
                         '',
                   ),
-                  onTap: () => Navigator.push(
+                  onTap: () => openNoteReader(
                     context,
-                    MaterialPageRoute<void>(
-                      builder: (_) => Scaffold(
-                        appBar: AppBar(
-                          title: Text(app.text('资料', 'Resources')),
-                        ),
-                        body: SingleChildScrollView(
-                          padding: const EdgeInsets.all(20),
-                          child: SelectableText(body),
-                        ),
-                      ),
-                    ),
+                    app: app,
+                    body: body,
+                    noteId: 'resource-${sha256.convert(utf8.encode(body))}',
+                    scope: app.scopeId,
+                    title:
+                        note['title'] as String? ?? app.text('资料', 'Resources'),
+                    documentOffset: null,
+                    storedNote: false,
                   ),
                 );
               },

@@ -11,7 +11,6 @@ import '../services/attachment_service.dart';
 import 'resource_share.dart';
 import 'group_learning_page.dart';
 import 'chat_save_notes_page.dart';
-import 'public_profile_page.dart';
 import 'routed_image.dart';
 import 'chat_attachment_panel.dart';
 import 'chat_info_page.dart';
@@ -47,6 +46,164 @@ import 'chat_emoji_panel.dart';
 import '../services/chat_sticker_store.dart';
 import '../domain/forum_share.dart';
 import 'forum_chat_share.dart';
+
+/// Cosmetic highlight for any "@word" token in a message body. Precise
+/// "who was actually mentioned" lives server-side in the message's
+/// `mentions` user-id array (see [mentionsCurrentUser]); this only makes the
+/// text visually stand out and never affects copy/forward/recall/reply.
+Widget mentionAwareText(
+  String body,
+  TextStyle style, {
+  required bool mentionsMe,
+}) {
+  final matches = RegExp(r'@[^\s@]{1,40}').allMatches(body).toList();
+  if (matches.isEmpty) return Text(body, style: style);
+  final highlight = style.copyWith(
+    color: mentionsMe ? Colors.redAccent : Colors.blueAccent,
+    fontWeight: FontWeight.w600,
+  );
+  final spans = <InlineSpan>[];
+  var last = 0;
+  for (final match in matches) {
+    if (match.start > last)
+      spans.add(TextSpan(text: body.substring(last, match.start)));
+    spans.add(
+      TextSpan(text: body.substring(match.start, match.end), style: highlight),
+    );
+    last = match.end;
+  }
+  if (last < body.length) spans.add(TextSpan(text: body.substring(last)));
+  return Text.rich(TextSpan(style: style, children: spans));
+}
+
+bool mentionsCurrentUser(Map<String, dynamic> m, String userId) {
+  if (m['mention_all'] == true) return true;
+  final ids = m['mentions'];
+  return ids is List && ids.contains(userId);
+}
+
+/// Bottom sheet to pick one group member (or "所有人" for managers) to
+/// mention. Paged/searchable via the same group_admin_v1 'members' action
+/// GroupMembersPage uses, so a huge group never loads its whole roster.
+class _MentionPicker extends StatefulWidget {
+  const _MentionPicker({
+    required this.app,
+    required this.admin,
+    required this.canMentionAll,
+  });
+  final AppController app;
+  final GroupAdmin admin;
+  final bool canMentionAll;
+  @override
+  State<_MentionPicker> createState() => _MentionPickerState();
+}
+
+class _MentionPickerState extends State<_MentionPicker> {
+  final search = TextEditingController();
+  List<Map<String, dynamic>> items = [];
+  bool loading = false;
+  Timer? debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+    search.addListener(() {
+      debounce?.cancel();
+      debounce = Timer(const Duration(milliseconds: 300), load);
+    });
+  }
+
+  @override
+  void dispose() {
+    debounce?.cancel();
+    search.dispose();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    setState(() => loading = true);
+    try {
+      final page = await widget.admin.members(
+        query: search.text.trim(),
+        limit: 30,
+      );
+      if (mounted) setState(() => items = GroupAdmin.rows(page['items']));
+    } catch (_) {
+      /* Non-fatal: the picker just shows an empty list. */
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  String name(Map<String, dynamic> m) =>
+      (m['group_nickname'] as String?)?.isNotEmpty == true
+      ? m['group_nickname'] as String
+      : (m['nickname'] as String? ?? '学友');
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: SizedBox(
+      height: MediaQuery.of(context).size.height * 0.6,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+            child: TextField(
+              controller: search,
+              autofocus: true,
+              decoration: const InputDecoration(
+                isDense: true,
+                prefixIcon: Icon(Icons.search),
+                hintText: '搜索群成员',
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              children: [
+                if (widget.canMentionAll && search.text.trim().isEmpty)
+                  ListTile(
+                    leading: const CircleAvatar(
+                      child: Icon(Icons.campaign_outlined),
+                    ),
+                    title: const Text('所有人'),
+                    onTap: () => Navigator.pop(context, {'all': true}),
+                  ),
+                for (final m in items)
+                  ListTile(
+                    leading: ChatAvatar(
+                      app: widget.app,
+                      groupId: widget.admin.roomId,
+                      remote: null,
+                      publicClient: widget.admin.client,
+                      userId: m['user_id'] as String,
+                      radius: 18,
+                    ),
+                    title: Text(
+                      name(m),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text('个人号：${m['personal_number'] ?? '未设置'}'),
+                    onTap: () => Navigator.pop(context, {
+                      'user_id': m['user_id'],
+                      'name': name(m),
+                    }),
+                  ),
+                if (loading)
+                  const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 class ChatRoomPage extends StatefulWidget {
   final AppController app;
@@ -106,6 +263,57 @@ class _ChatRoomPageState extends State<ChatRoomPage>
   List<Map<String, dynamic>> groupPins = [];
   bool get groupManager => groupRole == 'owner' || groupRole == 'admin';
 
+  // @mention tracking for the message currently being composed. Keyed by
+  // user_id so a later nickname change can't confuse who was mentioned;
+  // stale entries (the "@name " text got edited away) are dropped at send.
+  final mentionIds = <String, String>{};
+  bool mentionAll = false;
+  bool _mentionSheetOpen = false;
+
+  void insertAtCursor(String text) {
+    final selection = input.selection;
+    final cursor = selection.start >= 0 ? selection.start : input.text.length;
+    final newText = input.text.replaceRange(cursor, cursor, text);
+    input.value = input.value.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: cursor + text.length),
+    );
+  }
+
+  Future<void> openMentionPicker() async {
+    final admin = groupAdmin ??= GroupAdmin(repo.remote.client, room);
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _MentionPicker(
+        app: widget.app,
+        admin: admin,
+        canMentionAll: groupManager,
+      ),
+    );
+    if (picked == null || !mounted) return;
+    if (picked['all'] == true) {
+      mentionAll = true;
+      insertAtCursor('@所有人 ');
+    } else {
+      final id = picked['user_id'] as String;
+      final name = picked['name'] as String;
+      mentionIds[id] = name;
+      insertAtCursor('@$name ');
+    }
+  }
+
+  void checkMentionTrigger() {
+    if (!group || _mentionSheetOpen) return;
+    final text = input.text;
+    final cursor = input.selection.baseOffset;
+    if (cursor < 1 || cursor > text.length || text[cursor - 1] != '@') return;
+    _mentionSheetOpen = true;
+    unawaited(
+      openMentionPicker().whenComplete(() => _mentionSheetOpen = false),
+    );
+  }
+
   Future<void> loadGroupState({bool announce = false}) async {
     if (!group) return;
     final admin = groupAdmin ??= GroupAdmin(repo.remote.client, room);
@@ -128,8 +336,10 @@ class _ChatRoomPageState extends State<ChatRoomPage>
   /// roster on every refresh. Older servers fall back to the full list.
   Future<List<Map<String, dynamic>>> groupRoster() async {
     try {
-      final page = await (groupAdmin ??= GroupAdmin(repo.remote.client, room))
-          .members(limit: 100);
+      final page = await (groupAdmin ??= GroupAdmin(
+        repo.remote.client,
+        room,
+      )).members(limit: 100);
       return [
         ...GroupAdmin.rows(page['managers']),
         ...GroupAdmin.rows(page['items']),
@@ -152,6 +362,7 @@ class _ChatRoomPageState extends State<ChatRoomPage>
     WidgetsBinding.instance.addObserver(this);
     input.addListener(() {
       if (mounted) setState(() {});
+      checkMentionTrigger();
       if (!draftReady) return;
       draftTimer?.cancel();
       draftTimer = Timer(
@@ -443,9 +654,25 @@ class _ChatRoomPageState extends State<ChatRoomPage>
     setState(() => sending = true);
     try {
       repo.remote.checkUser();
-      await repo.store.enqueue(const Uuid().v4(), room, body);
+      // Only keep mentions whose "@name " text is still actually in the
+      // message; the user may have deleted it after picking someone.
+      final ids = [
+        for (final entry in mentionIds.entries)
+          if (body.contains('@${entry.value}')) entry.key,
+      ];
+      final all = mentionAll && body.contains('@所有人');
+      await repo.store.enqueue(
+        const Uuid().v4(),
+        room,
+        body,
+        attachment: ids.isEmpty && !all
+            ? null
+            : {'mentions': ids, if (all) 'mention_all': true},
+      );
       if (!mounted) return;
       input.clear();
+      mentionIds.clear();
+      mentionAll = false;
       await saveDraft();
       await refresh();
       bottom();
@@ -898,6 +1125,7 @@ class _ChatRoomPageState extends State<ChatRoomPage>
         context,
         MaterialPageRoute(
           builder: (_) => GroupInvitePage(
+            app: widget.app,
             remote: repo.remote,
             roomId: room,
             createFromDirect: !group,
@@ -1176,6 +1404,20 @@ class _ChatRoomPageState extends State<ChatRoomPage>
         ),
       );
       await loadGroupState();
+      return;
+    }
+    if (value == 'group_files') {
+      final admin = groupAdmin ??= GroupAdmin(repo.remote.client, room);
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => GroupFilesPage(
+            app: widget.app,
+            admin: admin,
+            manager: groupRole == 'owner' || groupRole == 'admin',
+          ),
+        ),
+      );
       return;
     }
     if (value == 'group_learning') {
@@ -1497,8 +1739,31 @@ class _ChatRoomPageState extends State<ChatRoomPage>
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(title),
+          title: Row(
+            children: [
+              if (widget.room['kind'] == 'group') ...[
+                ChatAvatar(
+                  app: widget.app,
+                  remote: repo.remote,
+                  roomId: widget.room['id'] as String,
+                  groupAvatar: true,
+                  avatarPath: widget.room['group_avatar_path'] as String?,
+                  radius: 16,
+                ),
+                const SizedBox(width: 8),
+              ],
+              Flexible(child: Text(title, overflow: TextOverflow.ellipsis)),
+            ],
+          ),
           actions: [
+            if (group && !denied)
+              IconButton(
+                tooltip: tr('群文件', 'Group files'),
+                icon: const Icon(Icons.folder_outlined),
+                onPressed: () => roomAction('group_files'),
+              ),
+            if (!denied && widget.live != null)
+              TransferInbox(app: widget.app, live: widget.live!, roomId: room),
             if (!denied)
               IconButton(
                 tooltip: tr('聊天信息', 'Chat info'),
@@ -1527,8 +1792,6 @@ class _ChatRoomPageState extends State<ChatRoomPage>
         ),
         body: Column(
           children: [
-            if (widget.live != null)
-              TransferInbox(app: widget.app, live: widget.live!),
             ValueListenableBuilder<Map<String, double>>(
               valueListenable: ChatApkStorage.progress,
               builder: (_, values, _) => values.isEmpty
@@ -1655,21 +1918,14 @@ class _ChatRoomPageState extends State<ChatRoomPage>
                               children: [
                                 Padding(
                                   padding: const EdgeInsets.only(top: 4),
-                                  child: InkWell(
-                                    onTap: () => Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => PublicProfilePage(
-                                          app: widget.app,
-                                          userId: m['sender_id'] as String,
-                                        ),
-                                      ),
-                                    ),
-                                    child: ChatAvatar(
-                                      remote: repo.remote,
-                                      userId: m['sender_id'] as String?,
-                                      radius: 18,
-                                    ),
+                                  child: ChatAvatar(
+                                    app: widget.app,
+                                    groupId: group
+                                        ? widget.room['id'] as String
+                                        : null,
+                                    remote: repo.remote,
+                                    userId: m['sender_id'] as String?,
+                                    radius: 18,
                                   ),
                                 ),
                                 const SizedBox(width: 6),
@@ -2042,9 +2298,9 @@ class _ChatRoomPageState extends State<ChatRoomPage>
                                               )
                                             else if (recalled ||
                                                 m['attachment_kind'] != 'image')
-                                              Text(
-                                                recalled
-                                                    ? (mine
+                                              (recalled
+                                                  ? Text(
+                                                      mine
                                                           ? tr(
                                                               '你撤回了一条消息',
                                                               'You recalled a message',
@@ -2052,13 +2308,24 @@ class _ChatRoomPageState extends State<ChatRoomPage>
                                                           : tr(
                                                               '对方撤回了一条消息',
                                                               'A message was recalled',
-                                                            ))
-                                                    : m['body'] as String,
-                                                style: const TextStyle(
-                                                  fontSize: 18,
-                                                  height: 1.4,
-                                                ),
-                                              ),
+                                                            ),
+                                                      style: const TextStyle(
+                                                        fontSize: 18,
+                                                        height: 1.4,
+                                                      ),
+                                                    )
+                                                  : mentionAwareText(
+                                                      m['body'] as String,
+                                                      const TextStyle(
+                                                        fontSize: 18,
+                                                        height: 1.4,
+                                                      ),
+                                                      mentionsMe:
+                                                          mentionsCurrentUser(
+                                                            m,
+                                                            user,
+                                                          ),
+                                                    )),
                                             if (!recalled &&
                                                 locationLink(m['body']) != null)
                                               TextButton.icon(

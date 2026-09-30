@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'group_file_share.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -289,6 +291,17 @@ class _GroupAdminPageState extends State<GroupAdminPage> {
                         if (await _run(context, () => admin.allMute(v))) await load();
                       },
                     ),
+                    SwitchListTile(
+                      key: const ValueKey('group-admin-member-friend-add'),
+                      dense: true,
+                      secondary: const Icon(Icons.person_add_alt_1_outlined),
+                      title: const Text('允许群成员互加好友'),
+                      subtitle: const Text('关闭后普通成员不能通过群成员列表互加好友，已有好友关系不受影响'),
+                      value: settings['allow_member_friend_add'] != false,
+                      onChanged: (v) async {
+                        if (await _run(context, () => admin.memberFriendAdd(v))) await load();
+                      },
+                    ),
                     tile(Icons.how_to_reg_outlined, '入群申请',
                         () => open(GroupRequestsPage(admin: admin)),
                         subtitle: '${data!['pending_requests']} 条待处理'),
@@ -472,7 +485,8 @@ class _GroupMembersPageState extends State<GroupMembersPage> {
     switch (choice) {
       case 'profile':
         await Navigator.push(context,
-            MaterialPageRoute<void>(builder: (_) => PublicProfilePage(app: widget.app, userId: id)));
+            MaterialPageRoute<void>(builder: (_) => PublicProfilePage(
+                app: widget.app, userId: id, groupId: admin.roomId)));
         return;
       case 'admin':
         await _run(context, () => admin.setAdmin(id, m['role'] != 'admin'),
@@ -562,6 +576,8 @@ class _GroupMembersPageState extends State<GroupMembersPage> {
                   : null,
             )
           : ChatAvatar(
+              app: widget.app,
+              groupId: admin.roomId,
               remote: null,
               publicClient: admin.client,
               userId: id,
@@ -586,6 +602,7 @@ class _GroupMembersPageState extends State<GroupMembersPage> {
       ),
       subtitle: Text(
         [
+          '个人号：${m['personal_number'] ?? '未设置'}',
           '入群 ${_day(m['joined_at'])}',
           ?muted,
           if (m['exempt_all_mute'] == true) '全员禁言可发言',
@@ -728,6 +745,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
       );
       await admin.settings({'avatar_path': path});
       s['avatar_path'] = path;
+      bumpChatAvatarVersion();
     }, done: '群头像已更新');
     await loadAvatar();
   }
@@ -830,6 +848,57 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
 // ======================================================================
 // Announcements (text, links, images/files from group files; pin; popup)
 // ======================================================================
+/// Shared with [GroupFilesPage], which surfaces the latest announcement at
+/// its own top banner instead of duplicating this dialog.
+Future<void> viewGroupAnnouncement(
+  BuildContext context,
+  GroupAdmin admin,
+  Map<String, dynamic> item,
+  bool manager,
+  AttachmentService files,
+  Future<void> Function() reload,
+) async {
+  final action = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(item['title'] as String),
+      content: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('${item['author_name'] ?? ''} · ${_time(item['created_at'])}'
+                '${manager ? ' · 已读 ${item['read_count']}' : ''}',
+                style: Theme.of(ctx).textTheme.bodySmall),
+            const SizedBox(height: 8),
+            _AnnouncementBody(item: item, files: files),
+          ],
+        ),
+      ),
+      actions: [
+        if (manager) TextButton(onPressed: () => Navigator.pop(ctx, 'edit'), child: const Text('编辑')),
+        if (manager) TextButton(onPressed: () => Navigator.pop(ctx, 'remove'), child: const Text('删除')),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, 'read'),
+          child: Text(item['is_read'] == true ? '关闭' : '我已阅读'),
+        ),
+      ],
+    ),
+  );
+  if (!context.mounted) return;
+  if (action == 'read' && item['is_read'] != true) {
+    await _run(context, () => admin.ack(item['id'] as String));
+  } else if (action == 'edit') {
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => _AnnouncementEditor(admin: admin, item: item)),
+    );
+  } else if (action == 'remove') {
+    await _run(context, () => admin.removeAnnouncement(item['id'] as String), done: '公告已删除');
+  }
+  await reload();
+}
+
 class GroupAnnouncementsPage extends StatefulWidget {
   const GroupAnnouncementsPage({super.key, required this.app, required this.admin, required this.manager});
   final AppController app;
@@ -863,44 +932,8 @@ class _GroupAnnouncementsPageState extends State<GroupAnnouncementsPage> {
     }
   }
 
-  Future<void> view(Map<String, dynamic> item) async {
-    final action = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(item['title'] as String),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('${item['author_name'] ?? ''} · ${_time(item['created_at'])}'
-                  '${widget.manager ? ' · 已读 ${item['read_count']}' : ''}',
-                  style: Theme.of(ctx).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              _AnnouncementBody(item: item, files: files),
-            ],
-          ),
-        ),
-        actions: [
-          if (widget.manager) TextButton(onPressed: () => Navigator.pop(ctx, 'edit'), child: const Text('编辑')),
-          if (widget.manager) TextButton(onPressed: () => Navigator.pop(ctx, 'remove'), child: const Text('删除')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'read'),
-            child: Text(item['is_read'] == true ? '关闭' : '我已阅读'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted) return;
-    if (action == 'read' && item['is_read'] != true) {
-      await _run(context, () => admin.ack(item['id'] as String));
-    } else if (action == 'edit') {
-      await edit(item);
-    } else if (action == 'remove') {
-      await _run(context, () => admin.removeAnnouncement(item['id'] as String), done: '公告已删除');
-    }
-    await load();
-  }
+  Future<void> view(Map<String, dynamic> item) =>
+      viewGroupAnnouncement(context, admin, item, widget.manager, files, load);
 
   Future<void> edit([Map<String, dynamic>? item]) async {
     final saved = await Navigator.push<bool>(
@@ -1058,6 +1091,7 @@ class GroupFilesPage extends StatefulWidget {
 class _GroupFilesPageState extends State<GroupFilesPage> {
   final search = TextEditingController();
   List<Map<String, dynamic>> items = [];
+  Map<String, dynamic>? announcement;
   bool loading = false, more = false;
   Timer? debounce;
   late final files = AttachmentService(widget.admin.client);
@@ -1066,10 +1100,22 @@ class _GroupFilesPageState extends State<GroupFilesPage> {
   void initState() {
     super.initState();
     load();
+    loadAnnouncement();
     search.addListener(() {
       debounce?.cancel();
       debounce = Timer(const Duration(milliseconds: 350), () => load());
     });
+  }
+
+  // Pinned first, then most recent (same ordering group_admin_v1 returns);
+  // the files page only ever needs the single current one to show up top.
+  Future<void> loadAnnouncement() async {
+    try {
+      final rows = await widget.admin.announcements();
+      if (mounted) setState(() => announcement = rows.isEmpty ? null : rows.first);
+    } catch (_) {
+      /* Non-fatal: the files list still works without the banner. */
+    }
   }
 
   @override
@@ -1095,9 +1141,25 @@ class _GroupFilesPageState extends State<GroupFilesPage> {
   }
 
   Future<void> upload() async {
-    final picked = await ImagePicker().pickMedia();
-    if (picked == null || !mounted) return;
-    await _run(context, () => files.uploadGroup(widget.admin.roomId, picked.path, picked.name), done: '已上传到群文件');
+    // Group files are not limited to gallery media. FilePicker opens Android's
+    // document provider so users can browse Downloads and other locations.
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.any,
+      withData: false,
+    );
+    if (result == null || result.files.isEmpty) return;
+    final picked = result.files.single;
+    final path = picked.path;
+    if (path == null || path.isEmpty) {
+      if (mounted) _toast(context, '无法读取所选文件，请换一个文件重试');
+      return;
+    }
+    if (!mounted) return;
+    await _run(
+      context,
+      () => files.uploadGroup(widget.admin.roomId, path, picked.name),
+      done: '已上传到群文件',
+    );
     await load();
   }
 
@@ -1109,6 +1171,45 @@ class _GroupFilesPageState extends State<GroupFilesPage> {
         : FloatingActionButton(heroTag: 'group-file-upload', onPressed: upload, child: const Icon(Icons.upload)),
     body: Column(
       children: [
+        if (announcement != null)
+          Card(
+            margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: InkWell(
+              onTap: () => viewGroupAnnouncement(
+                context, widget.admin, announcement!, widget.manager, files, loadAnnouncement),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('📢', style: TextStyle(fontSize: 18)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('群公告 · ${announcement!['title']}',
+                              style: Theme.of(context).textTheme.titleSmall,
+                              maxLines: 1, overflow: TextOverflow.ellipsis),
+                          const SizedBox(height: 2),
+                          Text('${announcement!['body'] ?? ''}',
+                              maxLines: 2, overflow: TextOverflow.ellipsis),
+                        ],
+                      ),
+                    ),
+                    if (widget.app != null)
+                      IconButton(
+                        tooltip: '历史公告',
+                        icon: const Icon(Icons.history, size: 20),
+                        onPressed: () => Navigator.push(context, MaterialPageRoute(
+                            builder: (_) => GroupAnnouncementsPage(
+                                app: widget.app!, admin: widget.admin, manager: widget.manager))),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
           child: TextField(
@@ -1128,10 +1229,12 @@ class _GroupFilesPageState extends State<GroupFilesPage> {
                     leading: Icon(f['is_pinned'] == true ? Icons.push_pin : Icons.description_outlined),
                     title: Text('${f['file_name']}', maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Text('${_size(f['file_size'])} · ${f['uploader_name'] ?? ''} · ${_day(f['created_at'])}'),
-                    trailing: widget.manager && !widget.pick
+                    trailing: !widget.pick
                         ? PopupMenuButton<String>(
                             onSelected: (v) async {
-                              if (v == 'pin') {
+                              if (v == 'public') {
+                                await publishGroupFile(context, files, f);
+                              } else if (v == 'pin') {
                                 await _run(context, () => widget.admin.pinFile(f['id'] as String, f['is_pinned'] != true));
                               } else {
                                 await _run(context, () async {
@@ -1141,8 +1244,9 @@ class _GroupFilesPageState extends State<GroupFilesPage> {
                               await load();
                             },
                             itemBuilder: (_) => [
-                              PopupMenuItem(value: 'pin', child: Text(f['is_pinned'] == true ? '取消置顶' : '置顶')),
-                              const PopupMenuItem(value: 'remove', child: Text('删除')),
+                              const PopupMenuItem(value: 'public', child: Text('转存到公共网盘')),
+                              if (widget.manager) PopupMenuItem(value: 'pin', child: Text(f['is_pinned'] == true ? '取消置顶' : '置顶')),
+                              if (widget.manager) const PopupMenuItem(value: 'remove', child: Text('删除')),
                             ],
                           )
                         : null,

@@ -1,4 +1,5 @@
 import 'presentation/resource_warning_host.dart';
+import 'presentation/windows_display.dart';
 import 'presentation/app_update_host.dart';
 import 'presentation/content_link_host.dart';
 import 'presentation/public_profile_link_page.dart';
@@ -121,13 +122,21 @@ class HuidengApp extends StatelessWidget {
           border: OutlineInputBorder(),
         ),
       ),
-      home: AppUpdateHost(app: controller, child: AppShell(app: controller)),
+      home: AppUpdateHost(
+        app: controller,
+        child: AppShell(app: controller),
+      ),
       onGenerateRoute: (settings) {
         final uri = Uri.tryParse(settings.name ?? '');
-        if (uri != null && uri.pathSegments.length == 2 && uri.pathSegments.first == 'u') {
+        if (uri != null &&
+            uri.pathSegments.length == 2 &&
+            uri.pathSegments.first == 'u') {
           return MaterialPageRoute(
             settings: settings,
-            builder: (_) => PublicProfileLinkPage(app: controller, publicId: uri.pathSegments[1]),
+            builder: (_) => PublicProfileLinkPage(
+              app: controller,
+              publicId: uri.pathSegments[1],
+            ),
           );
         }
         if (uri != null &&
@@ -136,17 +145,21 @@ class HuidengApp extends StatelessWidget {
             isForumShareSlug(uri.pathSegments[1])) {
           return MaterialPageRoute(
             settings: settings,
-            builder: (_) => ForumLinkPage(app: controller, slug: uri.pathSegments[1]),
+            builder: (_) =>
+                ForumLinkPage(app: controller, slug: uri.pathSegments[1]),
           );
         }
         return null;
       },
-      builder: (context, child) => ContentLinkHost(
-        app: controller,
-        navigatorKey: controller.navigatorKey,
-        child: ResourceWarningHost(
+      builder: (context, child) => WindowsDisplay(
+        size: controller.windowsDisplaySize,
+        child: ContentLinkHost(
           app: controller,
-          child: VoiceCallHost(app: controller, child: child!),
+          navigatorKey: controller.navigatorKey,
+          child: ResourceWarningHost(
+            app: controller,
+            child: VoiceCallHost(app: controller, child: child!),
+          ),
         ),
       ),
     ),

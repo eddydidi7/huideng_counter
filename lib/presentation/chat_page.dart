@@ -4,7 +4,7 @@ import '../services/group_operation_error.dart';
 import '../services/assistant_session.dart';
 import '../services/broadcast_inbox.dart';
 import 'file_assistant_page.dart';
-import 'public_profile_page.dart';
+import 'profile_navigation.dart';
 import 'chat_guest_gate.dart';
 import 'chat_qr_page.dart';
 import 'chat_top_bar.dart';
@@ -21,11 +21,12 @@ import '../data/remote/chat_remote.dart';
 import '../data/repositories/chat_repository.dart';
 import 'chat_room_page.dart';
 import '../data/remote/chat_live.dart';
-import 'direct_transfer_page.dart';
 import 'chat_contacts_page.dart';
 import '../domain/chat_view.dart';
 import 'chat_history_actions.dart';
 import 'chat_avatar.dart';
+import 'file_assistant_avatar.dart';
+import '../services/transfer_activity.dart';
 
 String chatError(AppController app, Object e) {
   final limit = resourceLimitMessage(e);
@@ -192,6 +193,10 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   String? myNumber;
   bool savingNickname = false;
   bool gridMode = false;
+  bool assistantPinned = false;
+  List<String> manualOrder = [];
+  List<Map<String, dynamic>> pendingFiles = [];
+  late final TransferActivity transferActivity;
   int nicknameRevision = 0;
   bool busy = false, active = true;
   int failures = 0;
@@ -201,12 +206,19 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    transferActivity = TransferActivity.forUser(widget.userId);
+    transferActivity.addListener(transferChanged);
+    unawaited(transferActivity.load());
+    AssistantManager.instance.addListener(transferChanged);
     initialize();
     SharedPreferences.getInstance().then((p) {
       if (mounted) {
-        setState(
-          () => gridMode = p.getBool('chat.grid.${widget.userId}') ?? false,
-        );
+        setState(() {
+          gridMode = p.getBool('chat.grid.${widget.userId}') ?? false;
+          assistantPinned =
+              p.getBool('chat.assistant.pin.${widget.userId}') ?? false;
+          manualOrder = p.getStringList('chat.order.${widget.userId}') ?? [];
+        });
       }
     });
   }
@@ -228,9 +240,12 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
       live!.addListener(liveChanged);
       // Keeps this device visible to the account's other devices.
       unawaited(
-        AssistantManager.instance.ensure(widget.client).catchError((Object _) {}),
+        AssistantManager.instance
+            .ensure(widget.client)
+            .catchError((Object _) {}),
       );
       rooms = await store.read('rooms');
+      pendingFiles = await store.read('pending_direct_files');
       views = await store.roomViews();
       emitUnread();
       final cachedProfile = await store.read('own_profile');
@@ -263,6 +278,19 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   }
 
   void liveChanged() {
+    for (final offer in live?.offers ?? <Map<String, dynamic>>[]) {
+      if (!transferActivity.records.containsKey('chat:${offer['id']}')) {
+        transferActivity.update(
+          id: 'chat:${offer['id']}',
+          name: '${offer['name']}',
+          state: 'waiting',
+        );
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  void transferChanged() {
     if (mounted) setState(() {});
   }
 
@@ -299,6 +327,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
       }
       final list = await repo.rooms();
       views = await repo.store.roomViews();
+      pendingFiles = await repo.store.read('pending_direct_files');
       final directory = ChatRepository.rows(
         await repo.remote.call('directory', {'search': search}),
       );
@@ -350,6 +379,8 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    transferActivity.removeListener(transferChanged);
+    AssistantManager.instance.removeListener(transferChanged);
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     debounce?.cancel();
@@ -369,6 +400,16 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   }
 
   Future<void> open(Map<String, dynamic> room) async {
+    if (room['id'] == fileAssistantRoomId) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => FileAssistantPage(app: app, live: live),
+        ),
+      );
+      if (mounted) await refresh();
+      return;
+    }
     if (repository == null || !mounted) return;
     await repository!.store.patchRoom(room['id'] as String, {
       'manualUnread': false,
@@ -614,12 +655,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
     );
     if (!mounted || choice == null) return;
     if (choice == 'profile') {
-      await Navigator.push<void>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => PublicProfilePage(app: app, userId: widget.userId),
-        ),
-      );
+      await openUserProfile(context, app, userId: widget.userId);
     } else if (choice == 'friend_setting') {
       await Navigator.push<void>(
         context,
@@ -673,11 +709,14 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   }
 
   Future<void> roomMenu(Map<String, dynamic> room) async {
+    final assistant = room['id'] == fileAssistantRoomId;
+    final list = conversationRows();
+    final index = list.indexWhere((r) => r['id'] == room['id']);
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
           children: [
             ListTile(title: Text(room['title'] as String)),
             ListTile(
@@ -686,31 +725,85 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
               ),
               onTap: () => Navigator.pop(ctx, 'pin'),
             ),
-            ListTile(
-              title: Text(tr('标记未读', 'Mark unread')),
-              onTap: () => Navigator.pop(ctx, 'unread'),
-            ),
-            ListTile(
-              title: Text(
-                room['muted'] == true
-                    ? tr('关闭免打扰', 'Unmute')
-                    : tr('消息免打扰', 'Mute'),
+            for (final direction in [-1, 1])
+              ListTile(
+                leading: Icon(
+                  direction < 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                ),
+                title: Text(
+                  direction < 0 ? tr('上移', 'Move up') : tr('下移', 'Move down'),
+                ),
+                enabled:
+                    index + direction >= 0 &&
+                    index + direction < list.length &&
+                    (list[index + direction]['pinned'] == true) ==
+                        (room['pinned'] == true),
+                onTap: () => Navigator.pop(ctx, direction < 0 ? 'up' : 'down'),
               ),
-              onTap: () => Navigator.pop(ctx, 'mute'),
-            ),
-            ListTile(
-              title: Text(tr('删除会话', 'Delete conversation')),
-              onTap: () => Navigator.pop(ctx, 'delete'),
-            ),
-            ListTile(
-              title: Text(tr('清空本机聊天记录', 'Clear local history')),
-              onTap: () => Navigator.pop(ctx, 'clear'),
-            ),
+            if (manualOrder.isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.sort),
+                title: Text(tr('恢复按最近活动排序', 'Sort by recent activity')),
+                onTap: () => Navigator.pop(ctx, 'automatic'),
+              ),
+            if (!assistant) ...[
+              ListTile(
+                title: Text(tr('标记未读', 'Mark unread')),
+                onTap: () => Navigator.pop(ctx, 'unread'),
+              ),
+              ListTile(
+                title: Text(
+                  room['muted'] == true
+                      ? tr('关闭免打扰', 'Unmute')
+                      : tr('消息免打扰', 'Mute'),
+                ),
+                onTap: () => Navigator.pop(ctx, 'mute'),
+              ),
+              ListTile(
+                title: Text(tr('删除会话', 'Delete conversation')),
+                onTap: () => Navigator.pop(ctx, 'delete'),
+              ),
+              ListTile(
+                title: Text(tr('清空本机聊天记录', 'Clear local history')),
+                onTap: () => Navigator.pop(ctx, 'clear'),
+              ),
+            ],
           ],
         ),
       ),
     );
     if (choice == null || !mounted) return;
+    if (choice == 'up' ||
+        choice == 'down' ||
+        choice == 'automatic' ||
+        assistant) {
+      await action(() async {
+        final preferences = await SharedPreferences.getInstance();
+        if (choice == 'pin') {
+          assistantPinned = !assistantPinned;
+          await preferences.setBool(
+            'chat.assistant.pin.${widget.userId}',
+            assistantPinned,
+          );
+        } else {
+          if (choice == 'automatic') {
+            manualOrder = [];
+          } else {
+            final target = index + (choice == 'up' ? -1 : 1);
+            if (index < 0 || target < 0 || target >= list.length) return;
+            final moved = list.removeAt(index);
+            list.insert(target, moved);
+            manualOrder = list.map((r) => r['id'] as String).toList();
+          }
+          await preferences.setStringList(
+            'chat.order.${widget.userId}',
+            manualOrder,
+          );
+        }
+        if (mounted) setState(() {});
+      });
+      return;
+    }
     await action(() async {
       if (choice == 'pin' || choice == 'mute') {
         await repository!.remote.call('preferences', {
@@ -761,23 +854,89 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
     });
   }
 
+  List<Map<String, dynamic>> conversationRows() {
+    final manager = AssistantManager.instance;
+    final latest = transferActivity.latest;
+    final incoming = manager.offers.length + (live?.offers.length ?? 0);
+    final pending =
+        pendingFiles.length +
+        manager.active
+            .where((r) => !manager.sessions.containsKey(r['id']))
+            .length;
+    final state = latest?['state'];
+    final label = switch (state) {
+      'transferring' => tr('传输中', 'Transferring'),
+      'complete' => tr('已完成', 'Completed'),
+      'cancelled' => tr('已取消', 'Cancelled'),
+      'paused' => tr('已暂停', 'Paused'),
+      'waiting' => tr('等待接收', 'Waiting for acceptance'),
+      'connecting' => tr('连接中', 'Connecting'),
+      'verifying' => tr('校验中', 'Verifying'),
+      _ => tr('等待继续传输', 'Ready to resume'),
+    };
+    final size = (latest?['size'] as num?) ?? 0;
+    final percent = size > 0
+        ? ((latest?['bytes'] as num? ?? 0) * 100 / size).clamp(0, 100).round()
+        : 0;
+    final preview = incoming > 0
+        ? tr('$incoming 个文件等待接收', '$incoming files awaiting acceptance')
+        : pending > 0 &&
+              ![
+                'transferring',
+                'paused',
+                'connecting',
+                'verifying',
+              ].contains(state)
+        ? tr('$pending 个文件等待继续传输', '$pending files ready to resume')
+        : latest != null
+        ? '${latest['name']} · $label${state == 'transferring' ? ' $percent%' : ''}'
+        : tr('暂无文件传输', 'No transfers yet');
+    return orderedChatConversations([
+      ...visibleChatRooms(rooms, views),
+      {
+        'id': fileAssistantRoomId,
+        'kind': 'assistant',
+        'title': tr('文件传输助手', 'File transfer assistant'),
+        'pinned': assistantPinned,
+        'unread': incoming,
+        'preview': preview,
+        'updated_at': latest?['at'],
+      },
+    ], manualOrder);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final conversations = visibleChatRooms(rooms, views);
+    final conversations = conversationRows();
     // Same size range and corner ratio as the counter project icons.
-    final avatarSize = ((MediaQuery.sizeOf(context).height - 180) / 6 - 8)
-        .clamp(36.0, 56.0) * .9;
-    Widget avatar(Map<String, dynamic> room) => room['kind'] == 'group'
-        ? Container(
-            width: avatarSize,
-            height: avatarSize,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.secondaryContainer,
-              borderRadius: BorderRadius.circular(avatarSize * .22),
-            ),
-            child: Icon(Icons.groups_outlined, size: avatarSize * .55),
-          )
+    final avatarSize =
+        ((MediaQuery.sizeOf(context).height - 180) / 6 - 8).clamp(36.0, 56.0) *
+        .9;
+    Widget avatar(Map<String, dynamic> room) =>
+        room['id'] == fileAssistantRoomId
+        ? FileAssistantAvatar(size: avatarSize)
+        : room['kind'] == 'group'
+        ? (room['group_avatar_path'] == null
+              ? Container(
+                  width: avatarSize,
+                  height: avatarSize,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    borderRadius: BorderRadius.circular(avatarSize * .22),
+                  ),
+                  child: Icon(Icons.groups_outlined, size: avatarSize * .55),
+                )
+              : ChatAvatar(
+                  app: app,
+                  remote: repository?.remote,
+                  roomId: room['id'] as String,
+                  groupAvatar: true,
+                  avatarPath: room['group_avatar_path'] as String?,
+                  radius: avatarSize / 2,
+                  cornerRadius: avatarSize * .22,
+                ))
         : ChatAvatar(
+            app: app,
             remote: repository?.remote,
             roomId: room['id'] as String,
             userId: live?.peers[room['id']],
@@ -788,13 +947,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
       appBar: AppBar(
         titleSpacing: 4,
         title: ChatTopBar(
-          onProfile: () => Navigator.push<void>(
-            context,
-            MaterialPageRoute(
-              builder: (_) =>
-                  PublicProfilePage(app: app, userId: widget.userId),
-            ),
-          ),
+          onProfile: () => openUserProfile(context, app, userId: widget.userId),
           english: app.english,
           onContacts: repository == null ? null : () => contacts('directory'),
           onResources: () => Navigator.push(
@@ -954,13 +1107,17 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
                             return false;
                           },
                           child: ListTile(
+                            key: room['id'] == fileAssistantRoomId
+                                ? const ValueKey('chat-file-assistant')
+                                : null,
                             dense: false,
                             minVerticalPadding: 2,
                             horizontalTitleGap: 10,
                             minLeadingWidth: avatarSize,
-                            titleTextStyle: Theme.of(
-                              context,
-                            ).textTheme.titleLarge?.copyWith(fontSize: 23 * .85),
+                            titleTextStyle: Theme.of(context)
+                                .textTheme
+                                .titleLarge
+                                ?.copyWith(fontSize: 23 * .85),
                             subtitleTextStyle: Theme.of(
                               context,
                             ).textTheme.bodyLarge?.copyWith(fontSize: 18 * .85),
@@ -980,7 +1137,9 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
                                   : Text(unread > 99 ? '99+' : '$unread'),
                               child: avatar(room),
                             ),
-                            title: room['kind'] == 'group'
+                            title:
+                                room['kind'] == 'group' ||
+                                    room['kind'] == 'assistant'
                                 ? Text(
                                     room['title'] as String,
                                     maxLines: 1,
@@ -1024,6 +1183,8 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
                                     Icons.notifications_off_outlined,
                                     size: 15,
                                   ),
+                                if (room['pinned'] == true)
+                                  const Icon(Icons.push_pin_outlined, size: 15),
                               ],
                             ),
                             onTap: () => open(room),

@@ -6,6 +6,7 @@ import '../data/remote/chat_remote.dart';
 import '../services/voice_call_service.dart';
 import 'chat_avatar.dart';
 import 'video_call_panel.dart';
+import 'profile_navigation.dart';
 
 class VoiceCallScope extends InheritedWidget {
   final VoiceCallService? service;
@@ -86,10 +87,12 @@ class _VoiceCallHostState extends State<VoiceCallHost>
     final s = service;
     return VoiceCallScope(
       service: s,
-      child: Stack(
+      child: ValueListenableBuilder<int>(
+        valueListenable: profileOverlayDepth,
+        builder: (context, depth, _) => Stack(
         children: [
           widget.child,
-          if (s?.active == true)
+          if (s?.active == true && depth == 0)
             Positioned.fill(
               child: PopScope(
                 canPop: false,
@@ -103,6 +106,7 @@ class _VoiceCallHostState extends State<VoiceCallHost>
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 ChatAvatar(
+                                  app: widget.app,
                                   remote: s.remote,
                                   roomId: s.call!['room_id'] as String,
                                   radius: 42,
@@ -254,6 +258,7 @@ class _VoiceCallHostState extends State<VoiceCallHost>
               ),
             ),
         ],
+      ),
       ),
     );
   }

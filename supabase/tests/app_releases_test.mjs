@@ -1,4 +1,4 @@
-import {PGlite} from '../../../../work/admin-sql-tests/package/dist/index.js';
+const {PGlite}=await import(process.env.PGLITE_MODULE??new URL('../../.dart_tool/group_resource_sql/node_modules/@electric-sql/pglite/dist/index.js',import.meta.url).href);
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const db=new PGlite();const actor='00000000-0000-4000-8000-000000000001';
@@ -11,6 +11,8 @@ create table admin_private.audit_logs(actor uuid,action text,target text,before_
 create table public.app_notices(id uuid default gen_random_uuid(),title_zh text,title_en text,body_zh text,body_en text,
 is_published boolean,notice_type text,published_at timestamptz,created_by uuid,updated_by uuid);`);
 await db.exec(fs.readFileSync(new URL('../migrations/202609210058_app_releases.sql',import.meta.url),'utf8'));
+const policy=fs.readFileSync(new URL('../migrations/202609290084_app_update_policy.sql',import.meta.url),'utf8');
+await db.exec(policy); await db.exec(policy);
 const call=async(action,payload)=>(await db.query('select public.huideng_admin_releases($1,$2,$3,$4) r',[actor,action,payload,crypto.randomUUID()])).rows[0].r;
 const latest=async()=>(await db.query('select public.latest_app_version() r')).rows[0].r;
 await db.exec('set role service_role');
@@ -27,4 +29,19 @@ await assert.rejects(()=>call('releases.save',{...data,download_url:'http://bad.
 await assert.rejects(()=>call('releases.save',{...data,sha256:'b'.repeat(64),expected_updated_at:saved.updated_at}));
 await call('releases.notify',{version_code:48});await call('releases.notify',{version_code:48});
 await db.exec('reset role');assert.equal((await db.query('select count(*) n from app_notices')).rows[0].n,1);
+const record=(await db.query('select * from app_releases where version_code=48')).rows[0];
+await db.exec('set role service_role');
+saved=await call('releases.save',{...record,expected_updated_at:record.updated_at,minimum_version_code:45,
+ auto_download:true,wifi_only:true,startup_check:true,prompt_enabled:false});
+await db.exec('set role anon');
+assert.equal((await latest()).minimum_version_code,45);
+assert.equal((await latest()).prompt_enabled,false);
+await db.exec('set role service_role');
+saved=await call('releases.save',{...saved,expected_updated_at:saved.updated_at,updates_enabled:false});
+await db.exec('set role anon'); assert.equal(await latest(),null);
+await db.exec('set role service_role');
+saved=await call('releases.save',{...saved,expected_updated_at:saved.updated_at,is_published:false});
+await assert.rejects(()=>call('releases.save',{...saved,expected_updated_at:saved.updated_at,sha256:'c'.repeat(64)}),/immutable/);
+await assert.rejects(()=>call('releases.save',{...data,version_code:47,is_published:true}),/increase/);
+await assert.rejects(()=>call('releases.save',{...data,version_code:49,minimum_version_code:50}),/minimum/);
 await db.close();console.log('PASS releases: draft isolation, service-only admin, HTTPS, immutable binary, single notification');

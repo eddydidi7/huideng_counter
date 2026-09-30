@@ -2,7 +2,8 @@
 setlocal EnableExtensions DisableDelayedExpansion
 title Wenshu Counter - Release APK Builder
 
-set "PROJECT=C:\Users\eddyd\Documents\Codex\2026-09-15\flutter-android-iphone-windows-android-ios\outputs\huideng_counter"
+set "PROJECT=%~dp0"
+if "%PROJECT:~-1%"=="\" set "PROJECT=%PROJECT:~0,-1%"
 set "FLUTTER=C:\Users\eddyd\Documents\Codex\tools\flutter\bin\flutter.bat"
 
 cls
