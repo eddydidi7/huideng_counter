@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../core/app_controller.dart';
+import '../core/sync_diagnostics.dart';
 import '../services/apk_files.dart';
 import '../services/app_release.dart';
 import 'app_update_page.dart';
@@ -36,13 +37,17 @@ class _AppUpdateHostState extends State<AppUpdateHost>
     final client = widget.app.cloud?.client;
     final nav = widget.app.navigatorKey.currentState;
     final platform = currentReleasePlatform();
-    if (platform == null ||
-        client == null ||
-        nav == null ||
-        checking ||
-        !mounted) {
+    if (platform == null || client == null || nav == null) {
+      SyncDiagnostics.record('update_host_check_skipped', {
+        'reason': platform == null
+            ? 'unsupported_platform'
+            : client == null
+            ? 'no_cloud_client'
+            : 'no_navigator',
+      });
       return;
     }
+    if (checking || !mounted) return;
     checking = true;
     try {
       final next = await AppRelease.forPlatform(client, platform);
@@ -55,8 +60,16 @@ class _AppUpdateHostState extends State<AppUpdateHost>
           /* Best-effort cache cleanup. */
         }
       }
-      debugPrint('[UPDATE_CHECK] currentVersionCode=$code '
-          'latestVersionCode=${next?.code} updateAvailable=${next != null && next.code > code}');
+      SyncDiagnostics.record('update_host_check_result', {
+        'platform': platform,
+        'current_version_code': code,
+        'server_version_code': next?.code,
+        'server_version_name': next?.name,
+        'server_updates_enabled': next?.enabled,
+        'server_prompt_enabled': next?.promptEnabled,
+        'server_startup_check': next?.startupCheck,
+        'should_prompt': next?.shouldPromptFor(code),
+      });
       if (next == null || !next.shouldPromptFor(code) || !mounted) {
         return;
       }
@@ -109,8 +122,13 @@ class _AppUpdateHostState extends State<AppUpdateHost>
           ),
         );
       }
-    } catch (_) {
+    } catch (e) {
       // Retry transient startup failures; never turn a failed query into "latest".
+      SyncDiagnostics.record('update_host_check_error', {
+        'platform': platform,
+        'error_type': e.runtimeType.toString(),
+        'detail': SyncDiagnostics.safeMessage(e.toString()),
+      });
     } finally {
       checking = false;
     }

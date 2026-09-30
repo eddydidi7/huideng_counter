@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../core/app_controller.dart';
+import '../core/sync_diagnostics.dart';
 import '../services/apk_files.dart';
 import '../services/app_release.dart';
 import '../services/generic_download.dart';
@@ -68,6 +69,12 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       }
       final client = widget.app.cloud?.client;
       if (client == null) throw StateError('暂时无法连接版本服务，请稍后重试');
+      SyncDiagnostics.record('update_check_started', {
+        'platform': platform,
+        'current_version_code': installed.versionCode,
+        'current_version_name': installed.versionName,
+        'automatic': automatic,
+      });
       final next = await AppRelease.forPlatform(client, platform);
       if (!mounted) return;
       if (next?.hash != release?.hash) {
@@ -84,6 +91,25 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
             ? '发现新版本'
             : '当前已是最新版本';
       });
+      SyncDiagnostics.record('update_check_result', {
+        'platform': platform,
+        'current_version_code': installed.versionCode,
+        'server_version_code': next?.code,
+        'server_version_name': next?.name,
+        'server_updates_enabled': next?.enabled,
+        'server_force_update': next?.force,
+        'server_auto_download': next?.autoDownload,
+        'download_url': next?.url,
+        // The row can exist (e.g. saved with 正式发布 off) yet never reach a
+        // real device — this line is the one to check first when "nothing
+        // happens on the phone" is reported, since a null server_version_*
+        // here means the server-side query itself returned no published row.
+        'resulting_status': release == null
+            ? 'no_published_release_or_disabled'
+            : release!.code > currentCode
+            ? 'update_available'
+            : 'up_to_date',
+      });
       if (Platform.isAndroid) {
         try {
           await ApkFiles.cleanupUpdates(currentCode);
@@ -92,6 +118,10 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
         }
       }
     } catch (e) {
+      SyncDiagnostics.record('update_check_error', {
+        'error_type': e.runtimeType.toString(),
+        'detail': SyncDiagnostics.safeMessage(e.toString()),
+      });
       if (mounted) setState(() => error = '检查更新失败：${describe(e)}');
     } finally {
       if (mounted) setState(() => busy = false);
@@ -133,10 +163,25 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       stopped = false;
       cancelled = false;
     });
+    SyncDiagnostics.record('update_download_started', {
+      'platform': Platform.isAndroid ? 'android' : 'windows',
+      'target_version_code': target.code,
+      'target_size': target.size,
+      'download_url': target.url,
+      'automatic': automatic,
+    });
+    var lastLoggedTenth = -1;
     try {
       void onProgress(double p) {
         if (mounted) setState(() => progress = p);
-        debugPrint('[UPDATE_DOWNLOAD] download=${(p * 100).toStringAsFixed(0)}%');
+        final tenth = (p * 10).floor();
+        if (tenth != lastLoggedTenth) {
+          lastLoggedTenth = tenth;
+          SyncDiagnostics.record('update_download_progress', {
+            'target_version_code': target.code,
+            'percent': (p * 100).round(),
+          });
+        }
       }
 
       if (Platform.isAndroid) {
@@ -213,8 +258,16 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
         transfer = null;
         networkTimer?.cancel();
         if (!mounted || stopped) return;
+        SyncDiagnostics.record('update_download_complete', {
+          'target_version_code': target.code,
+          'expected_size': target.size,
+        });
         setState(() => status = '正在校验安装包版本与签名');
         await verify(target, path);
+        SyncDiagnostics.record('update_verify_result', {
+          'target_version_code': target.code,
+          'sha256_and_version_match': true,
+        });
         if (!mounted) return;
         setState(() {
           readyPath = path;
@@ -236,14 +289,30 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
           onProgress: onProgress,
         );
         if (!mounted) return;
+        SyncDiagnostics.record('update_download_complete', {
+          'target_version_code': target.code,
+          'expected_size': target.size,
+        });
         setState(() => status = '下载完成，正在打开安装程序…');
         final result = await OpenFilex.open(path);
+        SyncDiagnostics.record('update_install_result', {
+          'platform': 'windows',
+          'target_version_code': target.code,
+          'result_type': result.type.toString(),
+        });
         if (result.type != ResultType.done) {
           throw StateError('无法自动打开安装程序，请在“$path”手动运行。');
         }
         if (mounted) setState(() => status = '请在安装程序中完成更新');
       }
     } catch (e) {
+      SyncDiagnostics.record('update_download_or_install_error', {
+        'platform': Platform.isAndroid ? 'android' : 'windows',
+        'target_version_code': target.code,
+        'stopped_by_user': stopped,
+        'error_type': e.runtimeType.toString(),
+        'detail': SyncDiagnostics.safeMessage(e.toString()),
+      });
       if (mounted && !stopped) setState(() => error = describe(e));
     } finally {
       transfer?.close();
@@ -324,6 +393,11 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
     try {
       await verify(release!, readyPath!);
       final result = await ApkFiles.channel.invokeMethod('install', readyPath);
+      SyncDiagnostics.record('update_install_result', {
+        'platform': 'android',
+        'target_version_code': release!.code,
+        'result': '$result',
+      });
       if (mounted) {
         setState(
           () => status = result == 'permission_required'
@@ -332,9 +406,40 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
         );
       }
     } catch (e) {
+      SyncDiagnostics.record('update_install_error', {
+        'platform': 'android',
+        'target_version_code': release?.code,
+        'error_type': e.runtimeType.toString(),
+        'detail': SyncDiagnostics.safeMessage(e.toString()),
+      });
       if (mounted) setState(() => error = describe(e));
     } finally {
       if (mounted) setState(() => busy = false);
+    }
+  }
+
+  /// Lets a non-technical tester get the exact chain of what happened —
+  /// check/download/install events, including the server's own answer for
+  /// each field — without needing adb or a debugger attached.
+  Future<void> copyDiagnostics() async {
+    final file = SyncDiagnostics.file;
+    if (file == null || !await file.exists()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('暂无诊断记录')),
+        );
+      }
+      return;
+    }
+    final lines = (await file.readAsLines())
+        .where((l) => l.contains('"action":"update_'))
+        .toList();
+    final tail = lines.length > 60 ? lines.sublist(lines.length - 60) : lines;
+    await Clipboard.setData(ClipboardData(text: tail.join('\n')));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已复制 ${tail.length} 条更新诊断记录')),
+      );
     }
   }
 
@@ -437,6 +542,10 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
               TextButton(
                 onPressed: busy ? null : check,
                 child: const Text('检查更新'),
+              ),
+              TextButton(
+                onPressed: copyDiagnostics,
+                child: const Text('复制诊断信息'),
               ),
               if (transfer != null && !stopped) ...[
                 TextButton(onPressed: pause, child: const Text('暂停')),
