@@ -78,6 +78,15 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         'images': <String>[],
       };
   bool get haptics => preferences['haptics'] != 'false';
+  String get windowsDisplaySize =>
+      const [
+        'small',
+        'standard',
+        'large',
+        'extraLarge',
+      ].contains(preferences['windowsDisplaySize'])
+      ? preferences['windowsDisplaySize']!
+      : 'large';
   String get sunriseUrl =>
       appLinks?.sunriseUrl ??
       'https://www.daysfromdate.com/zh-cn/sunrise/cn?utm_source=chatgpt.com';

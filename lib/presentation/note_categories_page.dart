@@ -14,9 +14,7 @@ void _message(BuildContext context, Object error) {
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: Text(
-        error is StateError ? error.message : '操作未完成，笔记未改动。请重试。',
-      ),
+      content: Text(error is StateError ? error.message : '操作未完成，笔记未改动。请重试。'),
     ),
   );
 }
@@ -39,10 +37,7 @@ Future<String?> promptCategoryName(
         onSubmitted: (v) => Navigator.pop(c, v),
       ),
       actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(c),
-          child: const Text('取消'),
-        ),
+        TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
         FilledButton(
           onPressed: () => Navigator.pop(c, input.text),
           child: const Text('确定'),
@@ -58,6 +53,72 @@ Future<String?> promptCategoryName(
 }
 
 const _newCategory = '\u0000new';
+
+Future<List<String>?> pickNoteCategories(
+  BuildContext context,
+  AppController app,
+  NotesRepository notes,
+) async {
+  final data = await noteCategoriesFor(app, notes).load();
+  if (!context.mounted) return null;
+  if (data.names.isEmpty) {
+    final created = await pickNoteCategory(
+      context,
+      app,
+      notes,
+      title: '添加到笔记本',
+    );
+    return created == null || created.isEmpty ? null : [created];
+  }
+  final selected = <String>{};
+  return showModalBottomSheet<List<String>>(
+    context: context,
+    isScrollControlled: true,
+    constraints: BoxConstraints(
+      maxWidth: 480,
+      maxHeight: MediaQuery.sizeOf(context).height * .8,
+    ),
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, update) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const ListTile(dense: true, title: Text('添加到笔记本')),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final name in data.names)
+                    CheckboxListTile(
+                      dense: true,
+                      title: Text(name),
+                      value: selected.contains(name),
+                      onChanged: (value) => update(() {
+                        if (value == true) {
+                          selected.add(name);
+                        } else {
+                          selected.remove(name);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: FilledButton(
+                onPressed: selected.isEmpty
+                    ? null
+                    : () => Navigator.pop(ctx, selected.toList()),
+                child: const Text('添加'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
 
 /// Returns the chosen category ('' = uncategorized) or null when cancelled.
 Future<String?> pickNoteCategory(

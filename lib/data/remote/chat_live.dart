@@ -58,6 +58,25 @@ class ChatLive extends ChangeNotifier {
 
   Future<void> heartbeat(Iterable<String> users) =>
       _serialize(() => _heartbeat(users));
+
+  Future<dynamic> transferCall(
+    String action, [
+    Map<String, dynamic> data = const {},
+  ]) async {
+    remote.checkUser();
+    final result = await remote.client
+        .rpc(
+          'chat_transfer_v2',
+          params: {
+            'p_action': action,
+            'p_data': {'device_id': deviceId, ...data},
+          },
+        )
+        .timeout(const Duration(seconds: 15));
+    remote.checkUser();
+    return result;
+  }
+
   Future<void> _heartbeat(Iterable<String> users) async {
     if (_closed) return;
     if (remote.client.auth.currentUser?.isAnonymous == true) invisible = false;

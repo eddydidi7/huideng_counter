@@ -9,6 +9,7 @@ import 'package:huideng_counter/data/repositories/sqlite_counter_repository.dart
 import 'package:huideng_counter/domain/solar_times.dart';
 import 'package:huideng_counter/presentation/solar_page.dart';
 import 'package:huideng_counter/services/solar_location_service.dart';
+import 'package:huideng_counter/domain/solar_cities.dart';
 
 class WaitingLocation extends SolarLocationService {
   WaitingLocation(this.cached);
@@ -36,6 +37,61 @@ class FailedNameLocation extends WaitingLocation {
 void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfiNoIsolate;
+  testWidgets(
+    'manual city works during pending GPS, persists, and rejects late GPS failure',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final db = await LocalDatabase.openAt(inMemoryDatabasePath);
+      final app = AppController(SqliteCounterRepository(db));
+      await app.set('language', 'zh');
+      final source = WaitingLocation(null);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SolarPage(app: app, locationService: source),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('选择地区'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('solar-city-search')),
+        'Lhasa',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('拉萨 · 中国'));
+      await tester.pumpAndSettle();
+      expect(find.text('Asia/Shanghai'), findsOneWidget);
+      expect(find.byKey(const ValueKey('solar-noon')), findsOneWidget);
+      expect((await SolarLocationService().load())!.manual, true);
+      source.pending.completeError(const SolarLocationFailure('denied'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('solar-location-error')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      final restored = WaitingLocation(
+        findSolarCities('Lhasa').single.location(english: false),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SolarPage(app: app, locationService: restored),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('拉萨 · 中国'), findsOneWidget);
+      expect(find.text('正在获取当前位置…'), findsNothing);
+      await tester.tap(find.text('使用当前位置'));
+      await tester.pump();
+      expect(find.text('正在获取当前位置…'), findsOneWidget);
+      restored.pending.complete(
+        findSolarCities('Auckland').single.location(english: false),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('奥克兰 · 新西兰'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      app.dispose();
+      await db.close();
+    },
+  );
   testWidgets(
     'fresh GPS renders solar times despite failed names and automatically retries',
     (tester) async {

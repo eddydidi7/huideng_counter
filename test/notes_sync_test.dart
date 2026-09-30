@@ -86,6 +86,69 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfiNoIsolate;
   test(
+    'pin survives reopen and sync; unpin restores title sorting without truncation',
+    () async {
+      var a = await database();
+      final b = await database();
+      final body = 'Z pinned ${'long body ' * 400}';
+      var note = await NotesRepository(a).save({'body': body, 'isPinned': 1});
+      await NotesRepository(a).setQuickAccess(note['id'] as String, true);
+      await NotesRepository(
+        a,
+      ).addCategories([note['id'] as String], ['经论', '常读']);
+      await NotesRepository(a).save({'body': 'A ordinary'});
+      final path = a.path;
+      await a.close();
+      a = await LocalDatabase.openAt(path);
+      final server = Server();
+      final sa = NotesSync(a, server, owner, () => owner);
+      final sb = NotesSync(b, server, owner, () => owner);
+      try {
+        expect(
+          (await NotesRepository(
+            a,
+          ).list(sort: 'title', ascending: true)).first['id'],
+          note['id'],
+        );
+        expect(
+          (await NotesRepository(
+            a,
+          ).list(search: 'Z pinned')).single['isPinned'],
+          1,
+        );
+        await cycle(sa);
+        await cycle(sb);
+        note = await NotesRepository(b).get(note['id'] as String);
+        expect(note['isPinned'], 1);
+        expect(NotesRepository.isQuickAccess(note), isTrue);
+        expect(NotesRepository.categoriesOf(note), ['经论', '常读']);
+        expect(note['body'], body);
+        await NotesRepository(b).save({...note, 'isPinned': 0});
+        await cycle(sb);
+        await cycle(sa);
+        expect(
+          (await NotesRepository(a).get(note['id'] as String))['isPinned'],
+          0,
+        );
+        expect(
+          (await NotesRepository(
+            a,
+          ).list(sort: 'title', ascending: true)).first['body'],
+          'A ordinary',
+        );
+        expect(
+          (await NotesRepository(a).get(note['id'] as String))['body'],
+          body,
+        );
+      } finally {
+        sa.stop();
+        sb.stop();
+        await a.close();
+        await b.close();
+      }
+    },
+  );
+  test(
     'v7 upgrade keeps original favorites and adds Favorites 2 empty',
     () async {
       var db = await database();

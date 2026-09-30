@@ -3,6 +3,15 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class NoteTypography extends ChangeNotifier {
+  static const minSize = 10.0, maxSize = 40.0, defaultSize = 20.0;
+  static const sizeDivisions = 30;
+  static double normalizeSize(dynamic value) => value is num && value.isFinite
+      ? value.toDouble().clamp(minSize, maxSize).roundToDouble()
+      : defaultSize;
+
+  // Grow glyphs without proportionally growing the extra space between lines.
+  static double textHeight(double size, double line) =>
+      1 + (line - 1) * size.clamp(minSize, 22.0) / size;
   static final _scopes = <String, NoteTypography>{};
   static NoteTypography forScope(String scope) =>
       _scopes.putIfAbsent(scope, () => NoteTypography._(scope));
@@ -11,17 +20,17 @@ class NoteTypography extends ChangeNotifier {
   }
   final String scope;
   late Future<void> ready;
-  double size = 22, line = 2.05, paragraph = 10;
+  double size = defaultSize, line = 2.05, paragraph = 10;
   String font = 'system';
   String get key => 'reader.preferences.v1.$scope';
   Future<void> reload() async {
     final prefs = await SharedPreferences.getInstance();
     final data = jsonDecode(prefs.getString(key) ?? '{}') as Map;
     double value(String key, double fallback, double min, double max) =>
-        data[key] is num
+        data[key] is num && (data[key] as num).isFinite
         ? (data[key] as num).toDouble().clamp(min, max)
         : fallback;
-    size = value('size', 22, 12, 40);
+    size = normalizeSize(data['size']);
     line = value('line', 2.05, 1.2, 2.6);
     paragraph = value('paragraph', 10, 0, 32);
     font = data['font'] == 'source' ? 'source' : 'system';
@@ -29,6 +38,7 @@ class NoteTypography extends ChangeNotifier {
   }
 
   Future<void> save() async {
+    size = normalizeSize(size);
     final prefs = await SharedPreferences.getInstance();
     final data = Map<String, dynamic>.from(
       jsonDecode(prefs.getString(key) ?? '{}') as Map,
@@ -69,8 +79,9 @@ class _TypographyState extends State<NoteTypographyPage> {
     double value,
     double min,
     double max,
-    ValueChanged<double> update,
-  ) => Column(
+    ValueChanged<double> update, {
+    int? divisions,
+  }) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text('$title：${value.toStringAsFixed(1)}'),
@@ -78,6 +89,7 @@ class _TypographyState extends State<NoteTypographyPage> {
         value: value,
         min: min,
         max: max,
+        divisions: divisions,
         onChanged: (v) => change(() => update(v)),
       ),
     ],
@@ -89,7 +101,7 @@ class _TypographyState extends State<NoteTypographyPage> {
       actions: [
         TextButton(
           onPressed: () => change(() {
-            settings.size = 22;
+            settings.size = NoteTypography.defaultSize;
             settings.line = 2.05;
             settings.paragraph = 10;
             settings.font = 'system';
@@ -113,7 +125,14 @@ class _TypographyState extends State<NoteTypographyPage> {
             ],
             onChanged: (v) => change(() => settings.font = v!),
           ),
-          slider('字体大小', settings.size, 12, 40, (v) => settings.size = v),
+          slider(
+            '字体大小',
+            settings.size,
+            NoteTypography.minSize,
+            NoteTypography.maxSize,
+            (v) => settings.size = NoteTypography.normalizeSize(v),
+            divisions: NoteTypography.sizeDivisions,
+          ),
           slider('行距', settings.line, 1.2, 2.6, (v) => settings.line = v),
           slider(
             '段落间距',
@@ -127,7 +146,7 @@ class _TypographyState extends State<NoteTypographyPage> {
             '愿以清净心，安住当下。\nRead slowly and clearly.',
             style: TextStyle(
               fontSize: settings.size,
-              height: settings.line,
+              height: NoteTypography.textHeight(settings.size, settings.line),
               fontFamily: settings.font == 'source' ? 'SourceHanSans' : null,
             ),
           ),
@@ -136,7 +155,7 @@ class _TypographyState extends State<NoteTypographyPage> {
             '在阅读中沉淀，在实践中成长。',
             style: TextStyle(
               fontSize: settings.size,
-              height: settings.line,
+              height: NoteTypography.textHeight(settings.size, settings.line),
               fontFamily: settings.font == 'source' ? 'SourceHanSans' : null,
             ),
           ),

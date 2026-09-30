@@ -8,30 +8,104 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../core/app_controller.dart';
 import '../data/remote/chat_remote.dart';
+import '../data/remote/group_admin.dart';
 import '../services/chat_image.dart';
+import 'profile_navigation.dart';
 
 const defaultChatAvatar = 'assets/images/default_chat_avatar.png';
 final _avatarVersion = ValueNotifier(0);
 final _avatarCache = <String, ({DateTime at, Future<String?> value})>{};
 
+/// Forces every mounted [ChatAvatar] on this device to refetch, e.g. right
+/// after this user saved a new personal or group avatar.
+void bumpChatAvatarVersion() {
+  _avatarCache.clear();
+  _avatarVersion.value++;
+}
+
 final _signedAvatars = <String, ({DateTime until, String url})>{};
 
-class ChatAvatar extends StatelessWidget {
+/// All user-avatar surfaces use this widget. Taps open the shared profile;
+/// callers may keep long-press/selection actions on the enclosing row.
+/// Group avatars are not people and retain their existing group action.
+class ChatAvatar extends StatefulWidget {
+  final AppController app;
   final ChatRemote? remote;
   final SupabaseClient? publicClient;
   final String? userId, roomId;
+  final String? groupId, publicProfileId, imageUrl;
   final double radius;
   final double? cornerRadius;
+
+  /// When true and [roomId] is set with no [userId], shows the GROUP's own
+  /// avatar (chat_group_settings.avatar_path) instead of a member's.
+  final bool groupAvatar;
+
+  /// Skips any lookup and signs this path directly. Pass this whenever the
+  /// caller already has the group's avatar_path (e.g. from the 'rooms' list,
+  /// which includes it as group_avatar_path) — chat_group_settings has no
+  /// direct SELECT grant, so without this every group-avatar render would
+  /// otherwise have to go through group_admin_v1('overview') just to read it.
+  final String? avatarPath;
   const ChatAvatar({
     super.key,
+    required this.app,
     this.remote,
     this.publicClient,
     this.userId,
     this.roomId,
     this.radius = 20,
     this.cornerRadius,
+    this.groupAvatar = false,
+    this.avatarPath,
+    this.groupId,
+    this.publicProfileId,
+    this.imageUrl,
   });
+
+  Future<String?> resolveUserId() async {
+    if (userId?.isNotEmpty == true) return userId;
+    final api = remote;
+    if (groupAvatar || api == null || roomId == null) return null;
+    api.checkUser();
+    final members = await api.call('members', {'room_id': roomId}) as List;
+    api.checkUser();
+    final peers = members
+        .map((m) => m['user_id'])
+        .whereType<String>()
+        .where((id) => id.isNotEmpty && id != api.userId)
+        .toSet();
+    return peers.length == 1 ? peers.single : null;
+  }
+
+  Future<String?> _sign(ChatRemote api, String path, String cacheKey) async {
+    final old = _signedAvatars[cacheKey];
+    if (old != null && old.until.isAfter(DateTime.now())) return old.url;
+    final url = await api.client.storage
+        .from('chat-avatars')
+        .createSignedUrl(path, 300)
+        .timeout(const Duration(seconds: 15));
+    api.checkUser();
+    if (_signedAvatars.length > 500) _signedAvatars.clear();
+    _signedAvatars[cacheKey] = (
+      until: DateTime.now().add(const Duration(seconds: 270)),
+      url: url,
+    );
+    return url;
+  }
+
   Future<String?> load() async {
+    if (publicProfileId != null) {
+      if (imageUrl?.isNotEmpty == true) return imageUrl;
+      if (avatarPath == null || publicClient == null) return null;
+      try {
+        return await publicClient!.storage
+            .from('chat-avatars')
+            .createSignedUrl(avatarPath!, 300);
+      } catch (_) {
+        return null;
+      }
+    }
     final api = remote;
     if (api == null) {
       final client = publicClient;
@@ -52,15 +126,23 @@ class ChatAvatar extends StatelessWidget {
     }
     try {
       api.checkUser();
-      var id = userId;
-      if (id == null && roomId != null) {
-        final members = await api.call('members', {'room_id': roomId}) as List;
-        id =
-            members
-                    .where((m) => m['user_id'] != api.userId)
-                    .firstOrNull?['user_id']
-                as String?;
+      if (userId == null && roomId != null && groupAvatar) {
+        String? path = avatarPath;
+        if (path == null) {
+          // chat_group_settings has no direct SELECT grant; go through the
+          // same RPC group_admin_page.dart uses instead of querying it.
+          final overview = await GroupAdmin(api.client, roomId!).overview();
+          api.checkUser();
+          path = (overview['settings'] as Map?)?['avatar_path'] as String?;
+        }
+        if (path == null) return null;
+        return await _sign(
+          api,
+          path,
+          '${identityHashCode(api.client)}:group:$roomId:$path',
+        );
       }
+      final id = await resolveUserId();
       if (id == null) return null;
       final profile = await api.client
           .from('chat_profiles')
@@ -71,22 +153,13 @@ class ChatAvatar extends StatelessWidget {
       api.checkUser();
       final path = profile?['avatar_path'] as String?;
       if (path == null) return null;
-      final cacheKey = '${identityHashCode(api.client)}:${api.userId}:$path';
-      final old = _signedAvatars[cacheKey];
-      if (old != null && old.until.isAfter(DateTime.now())) return old.url;
-      final url = await api.client.storage
-          .from('chat-avatars')
-          .createSignedUrl(path, 300)
-          .timeout(const Duration(seconds: 15));
-      api.checkUser();
-      if (_signedAvatars.length > 500) _signedAvatars.clear();
-      _signedAvatars[cacheKey] = (
-        until: DateTime.now().add(const Duration(seconds: 270)),
-        url: url,
+      return await _sign(
+        api,
+        path,
+        '${identityHashCode(api.client)}:${api.userId}:$path',
       );
-      return url;
     } catch (e) {
-      debugPrint('Chat avatar fallback: ${e.runtimeType}');
+      debugPrint('Chat avatar fallback: ${e.runtimeType}: $e');
       return null;
     }
   }
@@ -98,11 +171,13 @@ class ChatAvatar extends StatelessWidget {
     cacheWidth: 256,
   );
   @override
-  Widget build(BuildContext context) => ValueListenableBuilder<int>(
+  State<ChatAvatar> createState() => _ChatAvatarState();
+
+  Widget image(BuildContext context) => ValueListenableBuilder<int>(
     valueListenable: _avatarVersion,
     builder: (context, version, _) {
       final key =
-          '${identityHashCode(remote?.client ?? publicClient)}:${remote?.userId}:$userId:$roomId:$version';
+          '${identityHashCode(remote?.client ?? publicClient)}:${remote?.userId}:$userId:$roomId:$groupAvatar:$avatarPath:$publicProfileId:$imageUrl:$version';
       var entry = _avatarCache[key];
       if (entry == null || DateTime.now().difference(entry.at).inSeconds > 60) {
         if (_avatarCache.length > 500) _avatarCache.clear();
@@ -134,6 +209,53 @@ class ChatAvatar extends StatelessWidget {
       );
     },
   );
+}
+
+class _ChatAvatarState extends State<ChatAvatar> {
+  bool opening = false;
+  Future<void> open() async {
+    if (opening) return;
+    opening = true;
+    try {
+      final id = await widget.resolveUserId();
+      if (!mounted) return;
+      await openUserProfile(
+        context,
+        widget.app,
+        userId: id,
+        publicId: widget.publicProfileId,
+        groupId: widget.groupId,
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(
+          context,
+        )?.showSnackBar(const SnackBar(content: Text('暂时无法打开个人主页，请稍后重试')));
+      }
+    } finally {
+      opening = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = widget.image(context);
+    if (widget.groupAvatar) return image;
+    // Only claim taps. Parent long-press and selection gestures keep working.
+    return Semantics(
+      button: true,
+      label:
+          widget.userId == widget.app.cloud?.client?.auth.currentUser?.id &&
+              widget.userId != null
+          ? '我的个人主页'
+          : '查看个人主页',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: open,
+        child: image,
+      ),
+    );
+  }
 }
 
 class ChatAvatarPage extends StatefulWidget {
@@ -222,6 +344,7 @@ class _ChatAvatarPageState extends State<ChatAvatarPage> {
       children: [
         Center(
           child: ChatAvatar(
+            app: widget.app,
             remote: widget.remote,
             userId: widget.remote.userId,
             radius: 70,

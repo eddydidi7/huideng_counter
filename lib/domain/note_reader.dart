@@ -8,6 +8,22 @@ class ReaderParagraph {
       .join();
   String get anchor =>
       text.trim().length > 100 ? text.trim().substring(0, 100) : text.trim();
+
+  // TTS excludes images, while RenderParagraph counts each WidgetSpan once.
+  int layoutOffset(int speechOffset) {
+    var remaining = speechOffset.clamp(0, text.length), result = 0;
+    for (final run in runs) {
+      final insert = run['insert'];
+      if (insert is String) {
+        if (remaining < insert.length) return result + remaining;
+        remaining -= insert.length;
+        result += insert.length;
+      } else {
+        result++;
+      }
+    }
+    return result;
+  }
 }
 
 List<ReaderParagraph> readerParagraphs(String body) {
@@ -98,6 +114,19 @@ List<ReaderParagraph> readerParagraphs(String body) {
 
 double normalizeReaderRate(double value) =>
     (value.clamp(.3, 3) * 10).round() / 10.0;
+
+int readerTextBoundary(String text, int offset, {bool end = false}) {
+  final position = offset.clamp(0, text.length);
+  if (position > 0 &&
+      position < text.length &&
+      text.codeUnitAt(position - 1) >= 0xd800 &&
+      text.codeUnitAt(position - 1) <= 0xdbff &&
+      text.codeUnitAt(position) >= 0xdc00 &&
+      text.codeUnitAt(position) <= 0xdfff) {
+    return position + (end ? 1 : -1);
+  }
+  return position;
+}
 
 int restoreReaderAnchor(List<ReaderParagraph> paragraphs, dynamic saved) {
   if (saved is! Map) return 0;

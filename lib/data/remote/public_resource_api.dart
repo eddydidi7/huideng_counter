@@ -36,12 +36,33 @@ abstract class ResourceWebShareApi {
   Future<String> webShare(PublicResource file);
 }
 
+abstract class ResourceDeletionApi {
+  Future<void> deleteResource(PublicResource file);
+}
+
 abstract class ResourcePreviewApi {
   Future<File> preview(PublicResource file, {bool large = false});
 }
 
 class PublicResourceApi
-    implements ResourceLibraryApi, ResourceWebShareApi, ResourcePreviewApi {
+    implements
+        ResourceLibraryApi,
+        ResourceWebShareApi,
+        ResourcePreviewApi,
+        ResourceDeletionApi {
+  @override
+  Future<void> deleteResource(PublicResource file) async {
+    await request('delete', {'id': file.id});
+  }
+
+  Future<void> verifyGroup(String fileId) async {
+    for (var step = 0; step < 1024; step++) {
+      final result = await request('group.verify', {'file_id': fileId});
+      if (result['verified'] == true) return;
+    }
+    throw const DriveFailure('VERIFY_FAILED');
+  }
+
   @override
   Future<File> preview(PublicResource file, {bool large = false}) async {
     guard();
@@ -280,7 +301,7 @@ class PublicResourceApi
             progress: (value) => progress(value * 0.9),
           );
         }
-        for (var check = 0; check < 128; check++) {
+        for (var check = 0; check < 1024; check++) {
           final result = await request('complete', {
             'upload_id': task.id,
             'upload_protocol': 'tus',
@@ -381,13 +402,17 @@ class PublicResourceApi
   @override
   Future<String> download(
     PublicResource file,
-    void Function(double) progress,
-  ) async {
+    void Function(double) progress, {
+    String? groupFileId,
+  }) async {
     guard();
     if (!file.published) throw const DriveFailure('FILE_UNAVAILABLE');
     // Authorize even if a verified local copy exists: hidden resources must not
     // remain accessible from stale lists through this screen.
-    var plan = await request('download', {'id': file.id});
+    Future<Map<String, dynamic>> authorize() => groupFileId == null
+        ? request('download', {'id': file.id})
+        : request('group.download', {'file_id': groupFileId});
+    var plan = await authorize();
     final root = Directory(
       p.join((await _directory()).path, 'public_resources', owner, file.id),
     );
@@ -430,7 +455,7 @@ class PublicResourceApi
         await response.stream.drain<void>().timeout(
           const Duration(seconds: 30),
         );
-        plan = await request('download', {'id': file.id});
+        plan = await authorize();
         continue;
       }
       if (response.statusCode != 200) {

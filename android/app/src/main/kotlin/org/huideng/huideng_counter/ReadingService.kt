@@ -43,6 +43,7 @@ class ReadingService : Service() {
     private var path = ""
     private var index = 0
     private var offset = 0
+    private var rangeEnd = 0
     private var rate = 1f
     private var repeat = false
     private var language = "auto"
@@ -80,11 +81,11 @@ class ReadingService : Service() {
             ready = status == TextToSpeech.SUCCESS
             if (!ready) { error="没有可用的离线语音引擎，请安装语音包"; command("pause") }
             else { engine?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()); engine?.setOnUtteranceProgressListener(object: UtteranceProgressListener() {
-                override fun onStart(id: String) {}
+                override fun onStart(id: String) { main.post { if(id==utterance && playing) { rangeEnd=(start+1).coerceAtMost(end) } } }
                 override fun onDone(id: String) { main.post { if(id==utterance && playing) { offset=end; persist(true); speak() } } }
                 @Deprecated("Deprecated in Android") override fun onError(id: String) { failed(id) }
                 override fun onError(id: String, code: Int) { failed(id) }
-                override fun onRangeStart(id: String, from: Int, to: Int, frame: Int) { main.post { if(id==utterance) { offset=start+from; persist(false) } } }
+                override fun onRangeStart(id: String, from: Int, to: Int, frame: Int) { main.post { if(id==utterance && playing) { offset=(start+from).coerceIn(start,end); rangeEnd=(start+to).coerceIn(offset,end); persist(false) } } }
             }); if(playing) speak() }
         } }
     }
@@ -134,7 +135,7 @@ class ReadingService : Service() {
         return START_NOT_STICKY
     }
     private fun normalized(value: Float) = (Math.round(value.coerceIn(.3f,3f)*10)/10f)
-    fun state(): Map<String,Any?> = mapOf("scope" to scope,"noteId" to note,"index" to index,"offset" to offset,"rate" to rate.toDouble(),"playing" to playing,"active" to active,"count" to offsets.size,"error" to error,"path" to path,"title" to title,"lastReadAt" to System.currentTimeMillis())
+    fun state(): Map<String,Any?> = mapOf("scope" to scope,"noteId" to note,"index" to index,"offset" to offset,"rangeEnd" to rangeEnd,"rate" to rate.toDouble(),"playing" to playing,"active" to active,"count" to offsets.size,"error" to error,"path" to path,"title" to title,"lastReadAt" to System.currentTimeMillis())
     private fun persist(force: Boolean) {
         if(note.isEmpty() || (!force && SystemClock.elapsedRealtime()-savedAt<3000)) return
         savedAt=SystemClock.elapsedRealtime()
@@ -168,6 +169,7 @@ class ReadingService : Service() {
             start=offset.coerceIn(0,content.length); end=(start+900).coerceAtMost(content.length)
             if(end<content.length && end>start && Character.isHighSurrogate(content[end-1])) end--
             utterance="${++serial}:$index:$start"
+            rangeEnd=start
             if(engine!!.speak(content.substring(start,end),TextToSpeech.QUEUE_FLUSH,Bundle(),utterance)!=TextToSpeech.SUCCESS) { error="朗读失败"; command("pause") }
             persist(true); notifyState()
         } catch (_:Exception) { error="朗读暂不可用，位置已保留"; command("pause") }

@@ -87,6 +87,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('阅读设置'));
+      await tester.pumpAndSettle();
       expect(find.byType(TextField), findsNothing);
       expect(find.text('1.4x'), findsOneWidget);
       await tester.tap(find.text('播放 / 继续'));

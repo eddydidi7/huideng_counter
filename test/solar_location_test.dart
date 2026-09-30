@@ -1,12 +1,16 @@
+import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:huideng_counter/services/solar_location_service.dart';
+import 'package:huideng_counter/domain/solar_cities.dart';
 
 class FakeLocator extends GeolocatorPlatform {
   bool enabled = true, allow = true;
   int requests = 0;
   LocationPermission permission = LocationPermission.denied;
+  Completer<void>? fixReady;
+  final requested = Completer<void>();
   @override
   Future<bool> isLocationServiceEnabled() async => enabled;
   @override
@@ -22,18 +26,22 @@ class FakeLocator extends GeolocatorPlatform {
   @override
   Future<Position> getCurrentPosition({
     LocationSettings? locationSettings,
-  }) async => Position(
-    longitude: 121.4737,
-    latitude: 31.2304,
-    timestamp: DateTime.now(),
-    accuracy: 100,
-    altitude: 0,
-    altitudeAccuracy: 0,
-    heading: 0,
-    headingAccuracy: 0,
-    speed: 0,
-    speedAccuracy: 0,
-  );
+  }) async {
+    if (!requested.isCompleted) requested.complete();
+    await fixReady?.future;
+    return Position(
+      longitude: 121.4737,
+      latitude: 31.2304,
+      timestamp: DateTime.now(),
+      accuracy: 100,
+      altitude: 0,
+      altitudeAccuracy: 0,
+      heading: 0,
+      headingAccuracy: 0,
+      speed: 0,
+      speedAccuracy: 0,
+    );
+  }
 }
 
 void main() {
@@ -90,5 +98,19 @@ void main() {
       throwsA(isA<SolarLocationFailure>()),
     );
     expect(fake.requests, 0);
+  });
+  test('a late GPS fix cannot overwrite a newer manual choice', () async {
+    fake.fixReady = Completer<void>();
+    final service = SolarLocationService();
+    final pending = service.refresh();
+    await fake.requested.future;
+    final manual = findSolarCities('Lhasa').single.location(english: true);
+    await service.save(manual);
+    fake.fixReady!.complete();
+    await pending;
+    final restored = (await service.load())!;
+    expect(restored.manual, true);
+    expect(restored.name, manual.name);
+    expect(restored.timezoneId, 'Asia/Shanghai');
   });
 }

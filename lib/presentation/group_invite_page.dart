@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/app_controller.dart';
 import '../data/remote/chat_remote.dart';
 import '../data/repositories/chat_repository.dart';
 import 'chat_avatar.dart';
@@ -9,12 +10,14 @@ import 'package:uuid/uuid.dart';
 class GroupInvitePage extends StatefulWidget {
   const GroupInvitePage({
     super.key,
+    required this.app,
     required this.remote,
     required this.roomId,
     required this.memberIds,
     this.createFromDirect = false,
   });
   final ChatRemote remote;
+  final AppController app;
   final String roomId;
   final Set<String> memberIds;
   final bool createFromDirect;
@@ -149,6 +152,7 @@ class _GroupInviteState extends State<GroupInvitePage> {
                     !widget.memberIds.contains(person['user_id']))
                   CheckboxListTile(
                     secondary: ChatAvatar(
+                      app: widget.app,
                       remote: widget.remote,
                       userId: person['user_id'],
                     ),

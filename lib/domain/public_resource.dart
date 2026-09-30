@@ -8,6 +8,8 @@ class ResourcePolicy {
     this.uploadEnabled = false,
     this.downloadEnabled = false,
     this.reviewRequired = true,
+    this.uploaderDeleteEnabled = false,
+    this.groupTransferEnabled = false,
     this.notice = '',
     this.maxFileBytes = 0,
     this.totalBytes = 0,
@@ -19,6 +21,8 @@ class ResourcePolicy {
     uploadEnabled: json['upload_enabled'] == true,
     downloadEnabled: json['download_enabled'] == true,
     reviewRequired: json['review_required'] != false,
+    uploaderDeleteEnabled: json['uploader_delete_enabled'] == true,
+    groupTransferEnabled: json['group_transfer_enabled'] == true,
     notice: json['notice'] is String ? json['notice'] : '',
     maxFileBytes: _nonNegative(json['max_file_bytes']),
     totalBytes: _nonNegative(json['total_bytes']),
@@ -30,6 +34,7 @@ class ResourcePolicy {
         .toList(),
   );
   final bool enabled, uploadEnabled, downloadEnabled, reviewRequired;
+  final bool uploaderDeleteEnabled, groupTransferEnabled;
   final String notice;
   final int maxFileBytes, totalBytes, usedBytes;
   final List<String> categories;
@@ -47,6 +52,7 @@ class PublicResource {
       size = _nonNegative(json['file_size']),
       checksum = json['checksum'] as String,
       status = json['status'] as String,
+      canDelete = json['can_delete'] == true,
       category = json['category'] as String? ?? '',
       author = json['author_name'] as String? ?? '',
       description = json['description'] as String? ?? '',
@@ -68,6 +74,7 @@ class PublicResource {
       reviewNote;
   final String? createdAt;
   final int size;
+  final bool canDelete;
   bool get published => status == 'published';
 }
 

@@ -352,10 +352,10 @@ class _ForumEditPageState extends State<ForumEditPage>
     final hasMedia =
         images.isNotEmpty || legacy.isNotEmpty || files.isNotEmpty;
     if (heading.runes.length > 160 ||
-        (text.trim().isEmpty && !hasMedia) ||
+        (heading.isEmpty && text.trim().isEmpty && !hasMedia) ||
         !isArticleContentWithinLimit(text)) {
       setState(
-        () => error = '标题最多160字，正文最多500万字符；正文和图片不能同时为空。',
+        () => error = '标题最多160字，正文最多500万字符；标题、正文和图片不能同时为空。',
       );
       return;
     }

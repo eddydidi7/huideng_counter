@@ -1,5 +1,36 @@
 import 'package:flutter/material.dart';
 
+class NotePinnedTitle extends StatelessWidget {
+  const NotePinnedTitle({
+    super.key,
+    required this.child,
+    required this.pinned,
+    this.label = '已置顶',
+  });
+  final Widget child;
+  final bool pinned;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => pinned
+      ? Row(
+          children: [
+            Tooltip(
+              message: label,
+              child: Icon(
+                Icons.push_pin,
+                size: 14,
+                semanticLabel: label,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(child: child),
+          ],
+        )
+      : child;
+}
+
 class NoteGrid extends StatelessWidget {
   const NoteGrid({super.key, required this.count, required this.builder});
   final int count;
@@ -67,7 +98,7 @@ class NoteGridCard extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                       fontSize: 15,
                     ),
-                    child: title,
+                    child: NotePinnedTitle(pinned: pinned, child: title),
                   ),
                 ),
                 if (selected)
@@ -99,7 +130,6 @@ class NoteGridCard extends StatelessWidget {
                     style: Theme.of(context).textTheme.labelSmall,
                   ),
                 ),
-                if (pinned) const Icon(Icons.push_pin_outlined, size: 12),
                 if (favorite) const Icon(Icons.star_outline, size: 12),
                 if (favorite2) const Text('2★', style: TextStyle(fontSize: 12)),
                 if (failed)

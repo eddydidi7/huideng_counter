@@ -1,0 +1,64 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const {PGlite}=await import(process.env.PGLITE_MODULE??new URL('../../.dart_tool/group_resource_sql/node_modules/@electric-sql/pglite/dist/index.js',import.meta.url).href);
+const db=new PGlite();
+const admin='00000000-0000-4000-8000-000000000001',user='00000000-0000-4000-8000-000000000002',guest='00000000-0000-4000-8000-000000000003';
+await db.exec(`create role anon;create role authenticated;create role service_role;
+ create schema auth;create schema admin_private;
+ create table auth.users(id uuid primary key,is_anonymous boolean default false);
+ create table admin_private.members(user_id uuid,enabled boolean,role text);
+ create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+ insert into auth.users values('${admin}',false),('${user}',false),('${guest}',true);
+ insert into admin_private.members values('${admin}',true,'super_admin');`);
+const migration=fs.readFileSync(new URL('../migrations/202609290079_user_feature_restrictions.sql',import.meta.url),'utf8');
+await db.exec(migration);await db.exec(migration);
+const rpc=async(actor,action,data={})=>(await db.query('select public.admin_feature_permissions($1,$2,$3) v',[actor,action,data])).rows[0].v;
+const allowed=async(who,feature,permission)=>{
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[who??'']);
+ return (await db.query('select public.feature_allowed($1,$2) v',[feature,permission])).rows[0].v;
+};
+const catalog=(await rpc(admin,'catalog')).permissions;
+assert.equal(catalog.length,25);
+for(const actor of [null,user,guest]) for(const c of catalog) assert(await allowed(actor,c.feature,c.permission));
+await assert.rejects(()=>rpc(user,'get',{user_id:user}),/FORBIDDEN/);
+await assert.rejects(()=>rpc(guest,'freeze',{user_id:user}),/FORBIDDEN/);
+const payload={user_id:user,revision:0,request_id:crypto.randomUUID(),duration:'7d',reason:'测试原因',permissions:[{feature:'chat',permission:'send'}]};
+let state=await rpc(admin,'freeze',payload);
+assert.equal(state.status,'partially_frozen');assert.equal(state.revision,1);
+assert.deepEqual((await rpc(admin,'states',{user_ids:[user,guest]})).items.sort((a,b)=>a.user_id.localeCompare(b.user_id)),[
+ {user_id:user,status:'partially_frozen'},{user_id:guest,status:'normal'},
+]);
+await assert.rejects(()=>rpc(user,'states',{user_ids:[user]}),/FORBIDDEN/);
+await assert.rejects(()=>rpc(admin,'states',{user_ids:Array(52).fill(user)}),/INVALID_USERS/);
+assert.equal(await allowed(user,'chat','send'),false);
+assert(await allowed(user,'chat','browse'));assert(await allowed(user,'notes','use'));assert(await allowed(guest,'chat','send'));
+assert.deepEqual(await rpc(admin,'freeze',payload),state);
+await assert.rejects(()=>rpc(admin,'freeze',{...payload,duration:'30d'}),/REQUEST_CONFLICT/);
+await assert.rejects(()=>rpc(admin,'freeze',{...payload,request_id:crypto.randomUUID()}),/VERSION_CONFLICT/);
+await assert.rejects(()=>db.query('select feature_private.assert_allowed($1,$2,$3)',[user,'chat','send']),e=>e.message==='FEATURE_FROZEN'&&JSON.parse(e.detail).reason==='测试原因');
+await db.query("update feature_private.restrictions set frozen_at=now()-interval '8 days',expires_at=now()-interval '1 second' where user_id=$1",[user]);
+assert(await allowed(user,'chat','send'));assert.equal((await rpc(admin,'get',{user_id:user})).status,'normal');
+state=await rpc(admin,'freeze',{user_id:user,revision:1,request_id:crypto.randomUUID(),all:true,duration:'permanent'});
+assert.equal(state.status,'all_frozen');
+for(const c of catalog) assert.equal(await allowed(user,c.feature,c.permission),false);
+state=await rpc(admin,'restore',{user_id:user,revision:2,request_id:crypto.randomUUID(),permissions:[{feature:'notes',permission:'use'}]});
+assert.equal(state.status,'partially_frozen');assert(await allowed(user,'notes','use'));assert.equal(await allowed(user,'cloud_sync','use'),false);
+state=await rpc(admin,'restore',{user_id:user,revision:3,request_id:crypto.randomUUID(),all:true});
+assert.equal(state.status,'normal');
+for(const duration of ['3d','7d','14d','21d','30d','1y','custom']) {
+ state=await rpc(admin,'freeze',{...payload,revision:state.revision,request_id:crypto.randomUUID(),duration,expires_at:'2099-01-01T00:00:00Z'});
+ const r=state.permissions.find(p=>p.feature==='chat'&&p.permission==='send');
+ assert(r.remaining_seconds>0);assert.equal(r.restriction.permanent,false);
+}
+await assert.rejects(()=>rpc(admin,'freeze',{...payload,revision:state.revision,request_id:crypto.randomUUID(),duration:'custom',expires_at:'2000-01-01T00:00:00Z'}),/INVALID_EXPIRY/);
+await assert.rejects(()=>rpc(admin,'freeze',{...payload,revision:state.revision,request_id:crypto.randomUUID(),permissions:[{feature:'unknown',permission:'use'}]}),/INVALID_PERMISSIONS/);
+await db.exec('set role authenticated');
+await assert.rejects(()=>rpc(admin,'get',{user_id:user}),/permission denied/);
+await assert.rejects(()=>db.query('select * from feature_private.restrictions'),/permission denied/);
+await assert.rejects(()=>db.query("update public.app_feature_permissions set label='bypass'"),/permission denied/);
+await db.exec('reset role');
+assert((await rpc(admin,'audit',{user_id:user})).length>=10);
+await db.exec("insert into public.app_feature_permissions values('shop','buy','商城','购买','server')");
+assert(await allowed(user,'shop','buy'));
+await db.close();
+console.log('Permission registry, defaults, guests, expiry, restore, audit, idempotency and privilege tests passed.');

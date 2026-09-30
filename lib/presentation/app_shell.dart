@@ -41,6 +41,23 @@ class _AppShellState extends State<AppShell> {
     setState(() => selected = value);
   }
 
+  // A pushed sub-page (chat room, note editor, forum post, ...) covers this
+  // whole Scaffold via the root Navigator, so it naturally stops hit-testing
+  // from reaching this gesture detector at all — no extra "are we on a
+  // sub-page" check is needed. Within a module's own root page, any more
+  // specific horizontal gesture (forum channel/image swipe, a slider, a
+  // horizontal list) sits deeper in the tree and is hit-tested first, so it
+  // wins the gesture arena over this outer, whole-page detector.
+  void swipeModule(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity.abs() < 200) return;
+    if (velocity < 0 && selected < 4) {
+      selectDestination(selected + 1);
+    } else if (velocity > 0 && selected > 0) {
+      selectDestination(selected - 1);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = widget.app;
@@ -61,7 +78,10 @@ class _AppShellState extends State<AppShell> {
             Color(0xFF976400),
           ];
     return Scaffold(
-      body: IndexedStack(
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onHorizontalDragEnd: swipeModule,
+        child: IndexedStack(
         index: selected,
         children:
             <Widget>[
@@ -85,6 +105,7 @@ class _AppShellState extends State<AppShell> {
                   ),
                 )
                 .toList(),
+        ),
       ),
       bottomNavigationBar: NavigationBarTheme(
         data: NavigationBarThemeData(

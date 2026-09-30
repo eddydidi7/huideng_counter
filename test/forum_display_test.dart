@@ -15,7 +15,7 @@ void main() {
       }
       expect(
         getPostDisplayTitle({'body': '  \n 第一段\n\n 第二段   后面'}),
-        '第一段 第二段 后面',
+        '第一段',
       );
       expect(
         getPostDisplayTitle({
@@ -32,7 +32,7 @@ void main() {
       );
       final post = {'title': '', 'body': '🙏' * 40};
       final original = Map.of(post);
-      expect(getPostDisplayTitle(post), '${'🙏' * 28}……');
+      expect(getPostDisplayTitle(post), '🙏' * 40);
       expect(post, original);
     },
   );

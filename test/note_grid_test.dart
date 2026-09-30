@@ -16,6 +16,7 @@ void main() {
               count: 12,
               builder: (_, i) => NoteGridCard(
                 key: ValueKey(i),
+                pinned: i == 0,
                 title: Text(
                   '笔记标题 $i',
                   maxLines: 1,
@@ -35,6 +36,12 @@ void main() {
       final second = tester.getRect(find.byKey(const ValueKey(1)));
       final last = tester.getRect(find.byKey(const ValueKey(7)));
       expect(first.top, second.top);
+      expect(first.height, second.height);
+      expect(find.byIcon(Icons.push_pin), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.byIcon(Icons.push_pin)).dx,
+        lessThan(tester.getTopLeft(find.text('笔记标题 0')).dx),
+      );
       expect(first.right, lessThan(second.left));
       expect(last.bottom, lessThanOrEqualTo(640));
       expect(last.bottom, greaterThan(620));

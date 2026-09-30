@@ -228,6 +228,31 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
       appBar: AppBar(title: Text(tr('聊天信息', 'Chat info'))),
       body: ListView(
         children: [
+          if (group)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Row(
+                children: [
+                  ChatAvatar(
+                    app: widget.app,
+                    remote: widget.repository.remote,
+                    roomId: widget.room['id'] as String,
+                    groupAvatar: true,
+                    avatarPath: widget.room['group_avatar_path'] as String?,
+                    radius: 28,
+                  ),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.all(16),
             child: Wrap(
@@ -240,6 +265,8 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
                     child: Column(
                       children: [
                         ChatAvatar(
+                          app: widget.app,
+                          groupId: group ? widget.room['id'] as String : null,
                           remote: widget.repository.remote,
                           userId: m['user_id'],
                           radius: 27,

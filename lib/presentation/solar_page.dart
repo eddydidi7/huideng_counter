@@ -7,6 +7,8 @@ import '../domain/solar_times.dart';
 import '../services/solar_location_service.dart';
 import '../services/solar_time_service.dart';
 import '../services/solar_reminder_service.dart';
+import '../domain/solar_cities.dart';
+import 'solar_city_picker.dart';
 
 class SolarPage extends StatefulWidget {
   const SolarPage({super.key, required this.app, this.locationService});
@@ -130,13 +132,15 @@ class _SolarPageState extends State<SolarPage> with WidgetsBindingObserver {
       await updateReminders();
     } catch (e) {
       debugPrint('Solar location failed: ${e.runtimeType}');
-      if (mounted) {
+      if (mounted && generation == locationGeneration) {
         setState(
           () => failure = e is SolarLocationFailure ? e.code : 'unavailable',
         );
       }
     } finally {
-      if (mounted) setState(() => locating = false);
+      if (mounted && generation == locationGeneration) {
+        setState(() => locating = false);
+      }
     }
   }
 
@@ -425,6 +429,34 @@ class _SolarPageState extends State<SolarPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> chooseCity() async {
+    final city = await Navigator.push<SolarCity>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SolarCityPicker(english: widget.app.english),
+      ),
+    );
+    if (city == null || !mounted) return;
+    locationGeneration++;
+    nameRetry?.cancel();
+    final selected = city.location(english: widget.app.english);
+    try {
+      await locations.save(selected);
+      if (!mounted) return;
+      setState(() {
+        location = selected;
+        failure = null;
+        resolvingName = false;
+        locating = false;
+      });
+      if (followToday) date = selected.today();
+      calculate();
+      await updateReminders();
+    } catch (_) {
+      if (mounted) setState(() => failure = 'save');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final value = times;
@@ -440,6 +472,21 @@ class _SolarPageState extends State<SolarPage> with WidgetsBindingObserver {
           padding: const EdgeInsets.all(12),
           children: [
             if (loading) const LinearProgressIndicator(),
+            Wrap(
+              spacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: locating ? null : () => refresh(explicit: true),
+                  icon: const Icon(Icons.my_location),
+                  label: Text(tr('使用当前位置', 'Use current location')),
+                ),
+                OutlinedButton.icon(
+                  onPressed: chooseCity,
+                  icon: const Icon(Icons.location_city),
+                  label: Text(tr('选择地区', 'Choose region')),
+                ),
+              ],
+            ),
             if (location != null) ...[
               Text(
                 location!.name.isEmpty
@@ -452,7 +499,16 @@ class _SolarPageState extends State<SolarPage> with WidgetsBindingObserver {
               ),
               Row(
                 children: [
-                  Text(tr('当前地点', 'Current location')),
+                  Text(
+                    location!.manual
+                        ? tr('手动地区', 'Manual region')
+                        : tr('当前位置', 'Current location'),
+                  ),
+                  IconButton(
+                    onPressed: chooseCity,
+                    icon: const Icon(Icons.edit_location_alt),
+                    tooltip: tr('更改地区', 'Change region'),
+                  ),
                   IconButton(
                     icon: const Icon(Icons.info_outline, size: 20),
                     tooltip: tr('地点名称查询说明', 'Place name lookup'),

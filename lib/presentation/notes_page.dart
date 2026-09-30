@@ -11,6 +11,9 @@ import '../data/repositories/forum_repository.dart';
 import '../data/remote/forum_remote.dart';
 import '../data/local/home_message_cache.dart';
 import 'note_grid.dart';
+import 'note_actions_menu.dart';
+import 'note_list_share.dart';
+import 'note_search_page.dart';
 import '../services/note_export.dart';
 import '../core/sync_diagnostics.dart';
 import 'published_notes_page.dart';
@@ -42,6 +45,7 @@ class _NotesPageState extends State<NotesPage> {
   bool grid = false;
   bool sortAscending = false;
   final selected = <String>{};
+  final selectedStates = <String, Map<String, Object?>>{};
   late Future<List<Map<String, Object?>>> rows;
   AppController get app => widget.app;
   NotesRepository get repository =>
@@ -64,12 +68,17 @@ class _NotesPageState extends State<NotesPage> {
                 ascending: sortAscending,
               )
               .then(
-                (list) => category == null
+                (list) => folder == 'quick'
+                    ? list.where(NotesRepository.isQuickAccess).toList()
+                    : category == null
                     ? list
                     : list
                           .where(
-                            (row) =>
-                                NotesRepository.categoryOf(row) == category,
+                            (row) => category!.isEmpty
+                                ? NotesRepository.categoriesOf(row).isEmpty
+                                : NotesRepository.categoriesOf(
+                                    row,
+                                  ).contains(category),
                           )
                           .toList(),
               );
@@ -95,12 +104,17 @@ class _NotesPageState extends State<NotesPage> {
 
   bool get selecting => selected.isNotEmpty;
 
+  bool singleSelectedHas(String field) =>
+      selected.length == 1 && selectedStates[selected.single]?[field] == 1;
+
   void select(Map<String, Object?> note) => setState(() {
     final id = note['id'] as String;
+    selectedStates[id] = note;
     if (!selected.add(id)) selected.remove(id);
   });
 
   void selectAll(List<Map<String, Object?>> notes) => setState(() {
+    selectedStates.addEntries(notes.map((n) => MapEntry(n['id'] as String, n)));
     if (selected.length == notes.length) {
       selected.clear();
     } else {
@@ -118,6 +132,10 @@ class _NotesPageState extends State<NotesPage> {
   Future<void> bulkChange(String action) async {
     final ids = selected.toList(growable: false);
     if (ids.isEmpty) return;
+    if (action == 'category_add') {
+      await addToNotebooks(ids);
+      return;
+    }
     if (action == 'category') {
       final chosen = await pickNoteCategory(context, app, repository);
       if (chosen == null) return;
@@ -134,9 +152,9 @@ class _NotesPageState extends State<NotesPage> {
         );
       } catch (_) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('移动未完成，笔记未删除。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('移动未完成，笔记未删除。请重试。')));
           update(() {});
         }
       }
@@ -148,7 +166,10 @@ class _NotesPageState extends State<NotesPage> {
         builder: (context) => AlertDialog(
           title: Text(app.text('移入回收站？', 'Move to trash?')),
           content: Text(
-            app.text('已选择的笔记仍可在回收站恢复。', 'Selected notes can be restored from Trash.'),
+            app.text(
+              '已选择的笔记仍可在回收站恢复。',
+              'Selected notes can be restored from Trash.',
+            ),
           ),
           actions: [
             TextButton(
@@ -169,6 +190,12 @@ class _NotesPageState extends State<NotesPage> {
         final note = await repository.get(id);
         final next = <String, Object?>{...note};
         switch (action) {
+          case 'pin':
+            next['isPinned'] = 1;
+            break;
+          case 'unpin':
+            next['isPinned'] = 0;
+            break;
           case 'favorite':
             next['isFavorite'] = 1;
             break;
@@ -191,11 +218,19 @@ class _NotesPageState extends State<NotesPage> {
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(app.text('批量操作未完成，本地数据未删除。', 'Bulk action was not completed. Local data is retained.'))),
+          SnackBar(
+            content: Text(
+              app.text(
+                '批量操作未完成，本地数据未删除。',
+                'Bulk action was not completed. Local data is retained.',
+              ),
+            ),
+          ),
         );
       }
     }
   }
+
   String noteSummary(Map<String, Object?> note) {
     final body = NoteRichContent.plainText(
       note['body'] as String? ?? '',
@@ -208,21 +243,67 @@ class _NotesPageState extends State<NotesPage> {
         : String.fromCharCodes(text.runes.take(40));
   }
 
-  Future<void> edit([Map<String, Object?>? note]) async {
+  Future<void> edit([
+    Map<String, Object?>? note,
+    List<Map<String, Object?>>? siblings,
+    int? index,
+  ]) async {
     if (note != null) note = await repository.get(note['id'] as String);
     if (!mounted) return;
     await Navigator.push(
       context,
       MaterialPageRoute<void>(
         builder: (_) => (note?['body'] as String? ?? '').length > 100000
-            ? LargeNoteEditor(app: app, repository: repository, note: note!)
-            : NoteEditor(app: app, repository: repository, note: note),
+            ? LargeNoteEditor(
+                app: app,
+                repository: repository,
+                note: note!,
+                siblings: siblings,
+                siblingIndex: index,
+              )
+            : NoteEditor(
+                app: app,
+                repository: repository,
+                note: note,
+                siblings: siblings,
+                siblingIndex: index,
+              ),
       ),
     );
     if (mounted) update(() {});
   }
 
   Future<void> change(Map<String, Object?> row, String action) async {
+    if (action == 'category_add') {
+      await addToNotebooks([row['id'] as String]);
+      return;
+    }
+    if (action == 'select') {
+      select(row);
+      return;
+    }
+    if (action == 'share' || action == 'quick') {
+      try {
+        final note = await repository.get(row['id'] as String);
+        if (!mounted) return;
+        if (action == 'share') {
+          await shareNoteFromList(context, app, note);
+        } else {
+          await repository.setQuickAccess(
+            note['id'] as String,
+            !NotesRepository.isQuickAccess(note),
+          );
+          if (mounted) update(() {});
+        }
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('操作未完成，请重试。笔记未删除。')));
+        }
+      }
+      return;
+    }
     if (action == 'category') {
       final chosen = await pickNoteCategory(
         context,
@@ -235,16 +316,17 @@ class _NotesPageState extends State<NotesPage> {
         await repository.setCategory([row['id'] as String], chosen);
       } catch (_) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('移动未完成，笔记未改动。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('移动未完成，笔记未改动。请重试。')));
         }
       }
       if (mounted) update(() {});
       return;
     }
     try {
-      final next = {...row};
+      final next = {...await repository.get(row['id'] as String)};
+      if (!mounted) return;
       if (action == 'trash') {
         final confirmed = await showDialog<bool>(
           context: context,
@@ -270,7 +352,7 @@ class _NotesPageState extends State<NotesPage> {
       } else if (action == 'restore') {
         next['deletedAt'] = null;
       } else {
-        next[action] = row[action] == 1 ? 0 : 1;
+        next[action] = next[action] == 1 ? 0 : 1;
       }
       await repository.save(next);
       if (mounted) update(() {});
@@ -291,11 +373,38 @@ class _NotesPageState extends State<NotesPage> {
   }
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
+  Future<void> addToNotebooks(List<String> ids) async {
+    try {
+      final chosen = await pickNoteCategories(context, app, repository);
+      if (chosen == null || chosen.isEmpty) return;
+      await repository.addCategories(ids, chosen);
+      if (mounted) update(selected.clear);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('添加未完成，请重试。笔记未删除。')));
+      }
+    }
+  }
+
+  Future<void> quickMenu(Map<String, Object?> row) async {
+    if (selecting) {
+      select(row);
+      return;
+    }
+    final action = await showNoteActionMenu(
+      context,
+      noteQuickActions(row, trash: folder == 'trash'),
+    );
+    if (action != null && mounted) await change(row, action);
+  }
+
   Map<String, String> get folders => {
     'active': app.text('所有笔记', 'All notes'),
     'published': app.text('资料', 'Resources'),
     'favorites': app.text('收藏', 'Favorites'),
-    'favorites2': app.text('收藏2', 'Favorites 2'),
+    'quick': app.text('快速访问', 'Quick access'),
     'archive': app.text('归档', 'Archive'),
     'trash': app.text('回收站', 'Trash'),
   };
@@ -336,11 +445,8 @@ class _NotesPageState extends State<NotesPage> {
     final chosen = await Navigator.push<String>(
       context,
       MaterialPageRoute(
-        builder: (_) => NoteCategoriesPage(
-          app: app,
-          notes: repository,
-          current: folder,
-        ),
+        builder: (_) =>
+            NoteCategoriesPage(app: app, notes: repository, current: folder),
       ),
     );
     if (!mounted) return;
@@ -411,7 +517,7 @@ class _NotesPageState extends State<NotesPage> {
               leading: Icon(switch (entry.key) {
                 'published' => Icons.campaign_outlined,
                 'favorites' => Icons.star_outline,
-                'favorites2' => Icons.bookmark_border,
+                'quick' => Icons.bolt_outlined,
                 'archive' => Icons.archive_outlined,
                 'trash' => Icons.delete_outline,
                 _ => Icons.notes,
@@ -522,15 +628,17 @@ class _NotesPageState extends State<NotesPage> {
       automaticallyImplyLeading: false,
       titleSpacing: 4,
       title: selecting
-          ? Text(app.text('已选择 ${selected.length} 项', '${selected.length} selected'))
+          ? Text(
+              app.text(
+                '已选择 ${selected.length} 项',
+                '${selected.length} selected',
+              ),
+            )
           : AdaptiveActionBar(
               maxFontSize: 22,
               menuIndex: 0,
               actions: [
-                BarAction(
-                  app.text('分类', 'Categories'),
-                  openCategories,
-                ),
+                BarAction(app.text('分类', 'Categories'), openCategories),
                 BarAction(
                   app.text('所有笔记', 'All notes'),
                   () => update(() => folder = 'active'),
@@ -553,12 +661,48 @@ class _NotesPageState extends State<NotesPage> {
                 tooltip: app.text('批量操作', 'Bulk actions'),
                 onSelected: bulkChange,
                 itemBuilder: (_) => [
-                  PopupMenuItem(value: 'favorite', child: Text(app.text('收藏', 'Favorite'))),
-                  PopupMenuItem(value: 'unfavorite', child: Text(app.text('取消收藏', 'Unfavorite'))),
-                  PopupMenuItem(value: 'archive', child: Text(app.text('归档', 'Archive'))),
-                  PopupMenuItem(value: 'unarchive', child: Text(app.text('取消归档', 'Unarchive'))),
-                  PopupMenuItem(value: 'category', child: Text(app.text('加入 / 移动到分类', 'Move to category'))),
-                  PopupMenuItem(value: 'trash', child: Text(app.text('移入回收站', 'Move to trash'))),
+                  if (selected.length != 1 || !singleSelectedHas('isPinned'))
+                    PopupMenuItem(
+                      value: 'pin',
+                      child: Text(app.text('置顶', 'Pin')),
+                    ),
+                  if (selected.length != 1 || singleSelectedHas('isPinned'))
+                    PopupMenuItem(
+                      value: 'unpin',
+                      child: Text(app.text('取消置顶', 'Unpin')),
+                    ),
+                  if (selected.length != 1 || !singleSelectedHas('isFavorite'))
+                    PopupMenuItem(
+                      value: 'favorite',
+                      child: Text(app.text('收藏', 'Favorite')),
+                    ),
+                  if (selected.length != 1 || singleSelectedHas('isFavorite'))
+                    PopupMenuItem(
+                      value: 'unfavorite',
+                      child: Text(app.text('取消收藏', 'Unfavorite')),
+                    ),
+                  if (selected.length != 1 || !singleSelectedHas('isArchived'))
+                    PopupMenuItem(
+                      value: 'archive',
+                      child: Text(app.text('归档', 'Archive')),
+                    ),
+                  if (selected.length != 1 || singleSelectedHas('isArchived'))
+                    PopupMenuItem(
+                      value: 'unarchive',
+                      child: Text(app.text('取消归档', 'Unarchive')),
+                    ),
+                  PopupMenuItem(
+                    value: 'category_add',
+                    child: Text(app.text('添加到笔记本', 'Add to notebooks')),
+                  ),
+                  PopupMenuItem(
+                    value: 'category',
+                    child: Text(app.text('移动到笔记本', 'Move to notebook')),
+                  ),
+                  PopupMenuItem(
+                    value: 'trash',
+                    child: Text(app.text('移入回收站', 'Move to trash')),
+                  ),
                 ],
               ),
               IconButton(
@@ -569,9 +713,13 @@ class _NotesPageState extends State<NotesPage> {
             ]
           : [
               IconButton(
-                tooltip: app.text('笔记排序', 'Sort notes'),
-                icon: const Icon(Icons.sort),
-                onPressed: chooseSort,
+                tooltip: app.text('搜索笔记与文章', 'Search notes and articles'),
+                icon: const Icon(Icons.search),
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => NoteSearchPage(app: app),
+                  ),
+                ),
               ),
             ],
       bottom: search.isEmpty && category == null
@@ -641,17 +789,23 @@ class _NotesPageState extends State<NotesPage> {
                       ? () => select(n)
                       : folder == 'trash'
                       ? null
-                      : () => edit(n),
-                  onLongPress: () => select(n),
-                  title: Text(
-                    '${n['conflictOf'] == null ? '' : app.text('【冲突副本】', '[Conflict copy] ')}${noteSummary(n)}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontSize:
-                          (Theme.of(context).textTheme.titleMedium?.fontSize ??
-                              16) *
-                          1.1,
+                      : () => edit(n, notes, index),
+                  onLongPress: () => quickMenu(n),
+                  title: NotePinnedTitle(
+                    pinned: n['isPinned'] == 1,
+                    label: app.text('已置顶', 'Pinned'),
+                    child: Text(
+                      '${n['conflictOf'] == null ? '' : app.text('【冲突副本】', '[Conflict copy] ')}${noteSummary(n)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontSize:
+                            (Theme.of(
+                                  context,
+                                ).textTheme.titleMedium?.fontSize ??
+                                16) *
+                            1.1,
+                      ),
                     ),
                   ),
                   subtitle: Column(
@@ -666,7 +820,9 @@ class _NotesPageState extends State<NotesPage> {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           fontSize:
-                              (Theme.of(context).textTheme.bodyMedium?.fontSize ??
+                              (Theme.of(
+                                    context,
+                                  ).textTheme.bodyMedium?.fontSize ??
                                   14) *
                               1.06,
                         ),
@@ -676,15 +832,12 @@ class _NotesPageState extends State<NotesPage> {
                         '${MaterialLocalizations.of(context).formatShortDate(DateTime.parse(n['updatedAt'] as String).toLocal())} · ${MaterialLocalizations.of(context).formatTimeOfDay(TimeOfDay.fromDateTime(DateTime.parse(n['updatedAt'] as String).toLocal()), alwaysUse24HourFormat: true)}',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
-                      if (n['isPinned'] == 1 ||
-                          n['isFavorite'] == 1 ||
+                      if (n['isFavorite'] == 1 ||
                           n['isFavorite2'] == 1 ||
                           n['displaySync'] == 'failed')
                         Wrap(
                           spacing: 8,
                           children: [
-                            if (n['isPinned'] == 1)
-                              const Icon(Icons.push_pin_outlined, size: 14),
                             if (n['isFavorite'] == 1)
                               const Icon(Icons.star_outline, size: 14),
                             if (n['isFavorite2'] == 1) const Text('2★'),
@@ -706,58 +859,62 @@ class _NotesPageState extends State<NotesPage> {
                           onChanged: (_) => select(n),
                         )
                       : PopupMenuButton<String>(
-                    onSelected: (value) => change(n, value),
-                    itemBuilder: (_) => [
-                      if (folder == 'trash')
-                        PopupMenuItem(
-                          value: 'restore',
-                          child: Text(app.text('恢复', 'Restore')),
-                        )
-                      else ...[
-                        PopupMenuItem(
-                          value: 'isPinned',
-                          child: Text(
-                            app.text(
-                              n['isPinned'] == 1 ? '取消置顶' : '置顶',
-                              n['isPinned'] == 1 ? 'Unpin' : 'Pin',
-                            ),
-                          ),
+                          onSelected: (value) => change(n, value),
+                          itemBuilder: (_) => [
+                            if (folder == 'trash')
+                              PopupMenuItem(
+                                value: 'restore',
+                                child: Text(app.text('恢复', 'Restore')),
+                              )
+                            else ...[
+                              PopupMenuItem(
+                                value: 'isPinned',
+                                child: Text(
+                                  app.text(
+                                    n['isPinned'] == 1 ? '取消置顶' : '置顶',
+                                    n['isPinned'] == 1 ? 'Unpin' : 'Pin',
+                                  ),
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'isFavorite',
+                                child: Text(
+                                  app.text(
+                                    n['isFavorite'] == 1 ? '取消收藏' : '收藏',
+                                    n['isFavorite'] == 1
+                                        ? 'Unfavorite'
+                                        : 'Favorite',
+                                  ),
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'isArchived',
+                                child: Text(
+                                  app.text(
+                                    n['isArchived'] == 1 ? '取消归档' : '归档',
+                                    n['isArchived'] == 1
+                                        ? 'Unarchive'
+                                        : 'Archive',
+                                  ),
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'category',
+                                child: Text(
+                                  app.text('加入 / 移动到分类', 'Move to category'),
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'trash',
+                                child: Text(app.text('移入回收站', 'Move to trash')),
+                              ),
+                            ],
+                          ],
                         ),
-                        PopupMenuItem(
-                          value: 'isFavorite',
-                          child: Text(
-                            app.text(
-                              n['isFavorite'] == 1 ? '取消收藏' : '收藏',
-                              n['isFavorite'] == 1 ? 'Unfavorite' : 'Favorite',
-                            ),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: 'isArchived',
-                          child: Text(
-                            app.text(
-                              n['isArchived'] == 1 ? '取消归档' : '归档',
-                              n['isArchived'] == 1 ? 'Unarchive' : 'Archive',
-                            ),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: 'category',
-                          child: Text(
-                            app.text('加入 / 移动到分类', 'Move to category'),
-                          ),
-                        ),
-                        PopupMenuItem(
-                          value: 'trash',
-                          child: Text(app.text('移入回收站', 'Move to trash')),
-                        ),
-                      ],
-                    ],
-                  ),
                 );
                 if (grid) {
                   return NoteGridCard(
-                    title: tile.title!,
+                    title: (tile.title! as NotePinnedTitle).child,
                     summary: NoteRichContent.plainText(
                       n['body'] as String? ?? '',
                     ).trim().split('\n').skip(1).join(' ').trim(),
@@ -816,11 +973,20 @@ class NoteEditor extends StatefulWidget {
   final AppController app;
   final NotesRepository repository;
   final Map<String, Object?>? note;
+
+  /// The source list this note was opened from (its current sort/filter
+  /// order) plus this note's position in it, so left/right swipe can move
+  /// to the adjacent note in that same order. Null when opened without a
+  /// list context (e.g. a brand-new note), which disables the gesture.
+  final List<Map<String, Object?>>? siblings;
+  final int? siblingIndex;
   const NoteEditor({
     super.key,
     required this.app,
     required this.repository,
     this.note,
+    this.siblings,
+    this.siblingIndex,
   });
   @override
   State<NoteEditor> createState() => _NoteEditorState();
@@ -829,6 +995,9 @@ class NoteEditor extends StatefulWidget {
 class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
   late final quill.QuillController editor;
   final focusNode = FocusNode();
+  final readerEditorKey = GlobalKey<quill.EditorState>();
+  final readerViewportKey = GlobalKey();
+  bool openingReader = false;
   late Map<String, Object?> saved;
   Timer? timer;
   StreamSubscription? documentChanges;
@@ -955,6 +1124,61 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
     }
   }
 
+  void handleSwipe(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    if (velocity.abs() < 200) return;
+    unawaited(switchNote(velocity < 0 ? 1 : -1));
+  }
+
+  // Saves the current note (same path as the Done button/back gesture)
+  // before ever navigating away, so a swipe can never lose an edit. Reuses
+  // the caller's own list order/scope (category, favorites, search, ...)
+  // instead of re-querying, so switching stays within it.
+  Future<void> switchNote(int direction) async {
+    final siblings = widget.siblings;
+    final index = widget.siblingIndex;
+    if (siblings == null || index == null) return;
+    final target = index + direction;
+    if (target < 0 || target >= siblings.length) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              target < 0
+                  ? app.text('已经是第一篇', 'This is the first note')
+                  : app.text('已经是最后一篇', 'This is the last note'),
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    await save();
+    if (!mounted || error != null) return;
+    final next = await widget.repository.get(siblings[target]['id'] as String);
+    if (!mounted) return;
+    await Navigator.pushReplacement(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => (next['body'] as String? ?? '').length > 100000
+            ? LargeNoteEditor(
+                app: app,
+                repository: widget.repository,
+                note: next,
+                siblings: siblings,
+                siblingIndex: target,
+              )
+            : NoteEditor(
+                app: app,
+                repository: widget.repository,
+                note: next,
+                siblings: siblings,
+                siblingIndex: target,
+              ),
+      ),
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) unawaited(save());
@@ -1072,32 +1296,39 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
   }
 
   Future<void> readNote() async {
-    focusNode.unfocus();
-    await save();
-    if (!mounted || error != null) return;
-    if (saved['id'] == null) {
-      ScaffoldMessenger.of(
+    if (openingReader) return;
+    openingReader = true;
+    try {
+      final documentOffset = visibleNoteOffset(
+        readerEditorKey,
+        readerViewportKey,
+      );
+      focusNode.unfocus();
+      await save();
+      if (!mounted || error != null) return;
+      if (saved['id'] == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先输入并保存笔记正文')));
+        return;
+      }
+      await openNoteReader(
         context,
-      ).showSnackBar(const SnackBar(content: Text('请先输入并保存笔记正文')));
-      return;
-    }
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => NoteReaderPage(
-          app: app,
-          body: NoteRichContent.encode(editor.document),
-          noteId: saved['id'] as String,
-          scope: app.scopeId,
-          title: saved['title'] as String? ?? '',
-        ),
-      ),
-    );
-    final latest = await widget.repository.get(saved['id'] as String);
-    if (!mounted) return;
-    if (latest['body'] == saved['body']) {
-      setState(() => saved = latest);
-      if (latest['deletedAt'] != null) await leave();
+        app: app,
+        body: NoteRichContent.encode(editor.document),
+        noteId: saved['id'] as String,
+        scope: app.scopeId,
+        title: saved['title'] as String? ?? '',
+        documentOffset: documentOffset,
+      );
+      final latest = await widget.repository.get(saved['id'] as String);
+      if (!mounted) return;
+      if (latest['body'] == saved['body']) {
+        setState(() => saved = latest);
+        if (latest['deletedAt'] != null) await leave();
+      }
+    } finally {
+      openingReader = false;
     }
   }
 
@@ -1144,9 +1375,7 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
                   ListTile(
                     key: const ValueKey('note-more-category'),
                     leading: const Icon(Icons.folder_outlined),
-                    title: Text(
-                      app.text('加入 / 移动到分类', 'Move to category'),
-                    ),
+                    title: Text(app.text('加入 / 移动到分类', 'Move to category')),
                     subtitle: Text(
                       NotesRepository.categoryOf(saved).isEmpty
                           ? '当前：未分类'
@@ -1270,9 +1499,7 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已移到“${chosen.isEmpty ? '未分类' : chosen}”'),
-        ),
+        SnackBar(content: Text('已移到“${chosen.isEmpty ? '未分类' : chosen}”')),
       );
       return;
     }
@@ -1390,66 +1617,77 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
             BarAction(
               app.text('阅读模式', 'Reading mode'),
               readNote,
-              color: const Color(0xff90caf9),
+              icon: Icons.chrome_reader_mode_outlined,
+              visualScale: .85,
             ),
             // Completion is a normal text action, not a warning color.
-            BarAction(app.text('完成', 'Done'), leave),
+            BarAction(app.text('完成', 'Done'), leave, visualScale: .85),
           ],
           menu: IconButton(
             tooltip: app.text('更多', 'More'),
             onPressed: more,
-            icon: const Icon(Icons.more_horiz, color: Color(0xff90caf9)),
+            icon: Icon(
+              Icons.more_horiz,
+              size: 24 * 1.12,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
           ),
         ),
       ),
       body: promoting
           ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                Expanded(
-                  child: SharedRichEditor(
-                    readingScope: app.scopeId,
-                    controller: editor,
-                    focusNode: focusNode,
-                    config: quill.QuillEditorConfig(
-                      autoFocus: widget.note == null,
-                      expands: true,
-                      embedBuilders: [NoteImageBuilder()],
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-                      placeholder: app.text('开始书写…', 'Start writing…'),
+          : GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onHorizontalDragEnd: widget.siblings == null ? null : handleSwipe,
+              child: Column(
+                children: [
+                  Expanded(
+                    child: SharedRichEditor(
+                      key: readerViewportKey,
+                      readingScope: app.scopeId,
+                      controller: editor,
+                      focusNode: focusNode,
+                      config: quill.QuillEditorConfig(
+                        editorKey: readerEditorKey,
+                        autoFocus: widget.note == null,
+                        expands: true,
+                        embedBuilders: [NoteImageBuilder()],
+                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+                        placeholder: app.text('开始书写…', 'Start writing…'),
+                      ),
                     ),
                   ),
-                ),
-                SafeArea(
-                  top: false,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      toolbar(context),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            error ??
-                                app.text(
-                                  '${editor.document.toPlainText().trim().runes.length} 字符 · ${persisted == generation ? '已本地保存' : '正在保存'}',
-                                  '${editor.document.toPlainText().trim().runes.length} characters · ${persisted == generation ? 'Saved locally' : 'Saving'}',
-                                ),
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(
-                                  height: 1.2,
-                                  color: error == null
-                                      ? null
-                                      : Theme.of(context).colorScheme.error,
-                                ),
+                  SafeArea(
+                    top: false,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        toolbar(context),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              error ??
+                                  app.text(
+                                    '${editor.document.toPlainText().trim().runes.length} 字符 · ${persisted == generation ? '已本地保存' : '正在保存'}',
+                                    '${editor.document.toPlainText().trim().runes.length} characters · ${persisted == generation ? 'Saved locally' : 'Saving'}',
+                                  ),
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    height: 1.2,
+                                    color: error == null
+                                        ? null
+                                        : Theme.of(context).colorScheme.error,
+                                  ),
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
     ),
   );

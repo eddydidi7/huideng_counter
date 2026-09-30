@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'resumable_transfer.dart';
+import 'transfer_activity.dart';
 
 /// 文件传输助手: moves files between this account's own devices.
 /// Signalling via device_transfer_v1 (migration 202609250073); file bytes go
@@ -555,6 +556,16 @@ class AssistantManager extends ChangeNotifier {
       final r = await a.heartbeat();
       devices = [for (final d in r['devices'] as List? ?? []) Map<String, dynamic>.from(d as Map)];
       offers = [for (final o in r['offers'] as List? ?? []) Map<String, dynamic>.from(o as Map)];
+      final user = a.client.auth.currentUser?.id;
+      if (user != null) {
+        for (final offer in offers) {
+          final activity = TransferActivity.forUser(user);
+          if (!activity.records.containsKey('device:${offer['id']}')) {
+            activity.update(id: 'device:${offer['id']}',
+              name: '${offer['name']}', state: 'waiting');
+          }
+        }
+      }
       active = [for (final o in r['active'] as List? ?? []) Map<String, dynamic>.from(o as Map)];
       available = true;
       error = null;
@@ -570,8 +581,17 @@ class AssistantManager extends ChangeNotifier {
   AssistantSession _run(Map<String, dynamic> record) {
     final existing = sessions[record['id']];
     if (existing != null && !existing.ended) return existing;
-    final session = AssistantSession(api: api!, record: record)..addListener(notifyListeners);
+    final user = api!.client.auth.currentUser!.id;
+    final session = AssistantSession(api: api!, record: record);
+    void changed() {
+      TransferActivity.forUser(user).update(id: 'device:${session.id}',
+        name: session.name, state: session.state, bytes: session.bytes,
+        size: session.size, savedPath: session.savedPath);
+      notifyListeners();
+    }
+    session.addListener(changed);
     sessions[record['id'] as String] = session;
+    changed();
     unawaited(session.start());
     return session;
   }
@@ -625,6 +645,8 @@ class AssistantManager extends ChangeNotifier {
   Future<void> decline(Map<String, dynamic> offer) async {
     await api!.call('cancel', {'id': offer['id']});
     offers.removeWhere((o) => o['id'] == offer['id']);
+    TransferActivity.forUser(api!.client.auth.currentUser!.id).update(
+      id: 'device:${offer['id']}', name: '${offer['name']}', state: 'cancelled');
     notifyListeners();
   }
 

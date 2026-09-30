@@ -8,6 +8,11 @@ import 'jieyuan_actions.dart';
 import '../domain/post_display.dart';
 import 'chat_avatar.dart';
 import '../data/remote/chat_remote.dart';
+import '../data/local/chat_store.dart';
+import '../data/repositories/chat_repository.dart';
+import 'chat_room_page.dart';
+import 'chat_page.dart' show chatText;
+import '../services/group_operation_error.dart';
 import 'saved_resources_page.dart';
 import 'group_practice_page.dart';
 import 'group_navigation.dart';
@@ -20,9 +25,16 @@ import '../data/local/home_message_cache.dart';
 import 'forum_page.dart';
 
 class PublicProfilePage extends StatefulWidget {
-  const PublicProfilePage({super.key, required this.app, required this.userId});
+  const PublicProfilePage({super.key, required this.app, required this.userId, this.groupId}) : publicId = null;
+  const PublicProfilePage.publicLink({super.key, required this.app, required this.publicId})
+      : userId = '', groupId = null;
   final AppController app;
   final String userId;
+  final String? publicId;
+  /// Set when this profile was opened from a group's member list, so a
+  /// friend request from here still respects that group's own
+  /// "allow_member_friend_add" toggle (server-enforced either way).
+  final String? groupId;
   @override
   State<PublicProfilePage> createState() => _PublicProfilePageState();
 }
@@ -34,6 +46,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   String? publicId;
   bool get own =>
       widget.app.cloud?.client?.auth.currentUser?.id == widget.userId;
+  bool get canInteract => widget.publicId == null && widget.app.cloud?.client?.auth.currentUser != null;
   @override
   void initState() {
     super.initState();
@@ -42,6 +55,202 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
 
   Map<String, dynamic>? follow;
   bool followBusy = false;
+  Map<String, dynamic>? friend;
+  bool friendBusy = false;
+
+  Future<void> loadFriend() async {
+    try {
+      final remote = ChatRemote(
+        widget.app.cloud!.client!,
+        widget.app.cloud!.client!.auth.currentUser!.id,
+      );
+      final list = await remote.contacts('list') as Map;
+      final friends = List<Map<String, dynamic>>.from(list['friends'] as List);
+      if (mounted) {
+        setState(
+          () => friend = {
+            'is_friend': friends.any((p) => p['user_id'] == widget.userId),
+          },
+        );
+      }
+    } catch (_) {
+      /* Non-fatal: the add-friend button just shows without a state hint. */
+    }
+  }
+
+  Future<void> addFriend() async {
+    if (friendBusy) return;
+    setState(() => friendBusy = true);
+    final remote = ChatRemote(
+      widget.app.cloud!.client!,
+      widget.app.cloud!.client!.auth.currentUser!.id,
+    );
+    try {
+      final requiresApproval = await remote.requiresFriendApproval(widget.userId);
+      if (!mounted) return;
+      String note = '';
+      if (requiresApproval) {
+        final entered = await chatText(context, '好友验证消息（可留空）', maxLength: 200);
+        if (entered == null || !mounted) return;
+        note = entered;
+      }
+      await remote.contacts('request', {
+        'user_id': widget.userId,
+        'note': note,
+        if (widget.groupId != null) 'group_id': widget.groupId,
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(requiresApproval ? '好友申请已发送，等待对方同意' : '已添加为好友'),
+          ),
+        );
+        await loadFriend();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(groupOperationError(e))));
+      }
+    } finally {
+      if (mounted) setState(() => friendBusy = false);
+    }
+  }
+
+  Map<String, dynamic>? remark;
+  bool remarkBusy = false;
+
+  Future<void> loadRemark() async {
+    try {
+      final remoteApi = ChatRemote(
+        widget.app.cloud!.client!,
+        widget.app.cloud!.client!.auth.currentUser!.id,
+      );
+      final value = await remoteApi.contacts('remark_get', {
+        'user_id': widget.userId,
+      });
+      if (mounted) setState(() => remark = Map<String, dynamic>.from(value as Map));
+    } catch (_) {
+      /* Non-fatal: the profile still works without the remark section. */
+    }
+  }
+
+  Future<void> editRemark() async {
+    final nameCtrl = TextEditingController(
+      text: remark?['remark_name'] as String? ?? '',
+    );
+    final noteCtrl = TextEditingController(
+      text: remark?['remark_note'] as String? ?? '',
+    );
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('设置备注'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                autofocus: true,
+                maxLength: 40,
+                decoration: const InputDecoration(labelText: '备注名'),
+              ),
+              TextField(
+                controller: noteCtrl,
+                maxLength: 500,
+                maxLines: 4,
+                decoration: const InputDecoration(labelText: '备注内容'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (saved != true) {
+      nameCtrl.dispose();
+      noteCtrl.dispose();
+      return;
+    }
+    final name = nameCtrl.text.trim();
+    final note = noteCtrl.text.trim();
+    nameCtrl.dispose();
+    noteCtrl.dispose();
+    if (!mounted) return;
+    setState(() => remarkBusy = true);
+    try {
+      final remoteApi = ChatRemote(
+        widget.app.cloud!.client!,
+        widget.app.cloud!.client!.auth.currentUser!.id,
+      );
+      await remoteApi.contacts('remark_set', {
+        'user_id': widget.userId,
+        'remark_name': name,
+        'remark_note': note,
+      });
+      if (mounted) {
+        setState(() => remark = {'remark_name': name, 'remark_note': note});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(groupOperationError(e))));
+      }
+    } finally {
+      if (mounted) setState(() => remarkBusy = false);
+    }
+  }
+
+  bool messageBusy = false;
+
+  Future<void> sendMessage() async {
+    if (messageBusy) return;
+    setState(() => messageBusy = true);
+    try {
+      final client = widget.app.cloud!.client!;
+      final user = client.auth.currentUser!.id;
+      final repo = ChatRepository(
+        await ChatStore.open(user),
+        ChatRemote(client, user),
+      );
+      final data = await repo.remote.call('direct', {'user_id': widget.userId});
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatRoomPage(
+            app: widget.app,
+            repository: repo,
+            room: {
+              'id': data['id'],
+              'kind': 'direct',
+              'title': (data?['profile'] as Map?)?['nickname'] ?? '学友',
+            },
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(groupOperationError(e))));
+      }
+    } finally {
+      if (mounted) setState(() => messageBusy = false);
+    }
+  }
 
   /// Separate from the profile so an undeployed social migration never
   /// hides the rest of the page.
@@ -93,7 +302,30 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   Future<void> load() async {
+    if (widget.publicId != null) {
+      try {
+        final result = await widget.app.cloud?.client?.rpc(
+          'community_public_profile_v1', params: {'p_public_id': widget.publicId});
+        if (result is! Map) throw StateError('PROFILE_NOT_FOUND');
+        final profile = result.containsKey('profile') ? result['profile'] : result;
+        if (profile is! Map) throw StateError('PROFILE_NOT_FOUND');
+        if (mounted) {
+          setState(() {
+          data = {'profile': Map<String, dynamic>.from(profile), 'posts': []};
+          publicId = widget.publicId;
+          error = null;
+        });
+        }
+      } catch (_) {
+        if (mounted) setState(() => error = '此个人主页不存在、未公开或暂时无法加载');
+      }
+      return;
+    }
     unawaited(loadFollow());
+    if (!own && canInteract) {
+      unawaited(loadFriend());
+      unawaited(loadRemark());
+    }
     try {
       final result = await widget.app.cloud!.client!.rpc(
         'community_profile_v1',
@@ -131,6 +363,12 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     return Uri.tryParse('$base/u/$publicId')?.scheme == 'https'
         ? '$base/u/$publicId'
         : null;
+  }
+
+  Future<void> editAvatar() async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => ChatAvatarPage(
+      app: widget.app, remote: ChatRemote(widget.app.cloud!.client!, widget.userId))));
+    if (mounted) await load();
   }
 
   Future<void> shareProfile({required bool copy}) async {
@@ -248,7 +486,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     );
     return Scaffold(
       appBar: AppBar(
-        title: const Text('个人主页'),
+        title: Text(own ? '我的个人主页' : '个人主页'),
         actions: [
           if (own)
             TextButton(
@@ -273,6 +511,8 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
             ),
           if (own)
             IconButton(onPressed: edit, icon: const Icon(Icons.edit_outlined)),
+          if (own)
+            IconButton(tooltip: '更换头像', onPressed: editAvatar, icon: const Icon(Icons.add_a_photo_outlined)),
         ],
       ),
       body: RefreshIndicator(
@@ -280,39 +520,22 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
         child: ListView(
           children: [
             ListTile(
-              leading: InkWell(
-                onTap: !own
-                    ? null
-                    : () async {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => ChatAvatarPage(
-                              app: widget.app,
-                              remote: ChatRemote(
-                                widget.app.cloud!.client!,
-                                widget.userId,
-                              ),
-                            ),
-                          ),
-                        );
-                        if (mounted) await load();
-                      },
-                child: ChatAvatar(
-                  remote: ChatRemote(
-                    widget.app.cloud!.client!,
-                    widget.app.cloud!.client!.auth.currentUser?.id ?? '',
-                  ),
-                  userId: widget.userId,
-                ),
+              leading: ChatAvatar(
+                  app: widget.app,
+                  publicClient: widget.app.cloud?.client,
+                  remote: widget.app.cloud?.client?.auth.currentUser == null ? null : ChatRemote(
+                    widget.app.cloud!.client!, widget.app.cloud!.client!.auth.currentUser!.id),
+                  userId: widget.publicId == null ? widget.userId : null,
+                  publicProfileId: widget.publicId,
+                  avatarPath: profile?['avatar_path'] as String?,
+                  imageUrl: profile?['avatar_url'] as String?,
               ),
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(profile?['nickname'] ?? '学友'),
-                  if (profile?['personal_number'] != null)
                     Text(
-                      '个人号：${profile!['personal_number']}',
+                      '个人号：${profile?['personal_number'] ?? (data == null ? '加载中' : '未公开或未设置')}',
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                 ],
@@ -355,6 +578,58 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
                             ),
                   ],
                 ),
+              ),
+            if (!own && canInteract)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    OutlinedButton.icon(
+                      key: const ValueKey('profile-message-button'),
+                      onPressed: messageBusy ? null : sendMessage,
+                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                      label: const Text('发消息'),
+                    ),
+                    if (friend != null) ...[
+                      const SizedBox(width: 8),
+                      friend!['is_friend'] == true
+                          ? const Chip(
+                              key: ValueKey('profile-friend-chip'),
+                              avatar: Icon(Icons.check, size: 18),
+                              label: Text('已是好友'),
+                            )
+                          : OutlinedButton.icon(
+                              key: const ValueKey('profile-add-friend-button'),
+                              onPressed: friendBusy ? null : addFriend,
+                              icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+                              label: const Text('加好友'),
+                            ),
+                    ],
+                  ],
+                ),
+              ),
+            if (!own && canInteract)
+              ListTile(
+                key: const ValueKey('profile-remark'),
+                dense: true,
+                leading: const Icon(Icons.edit_note),
+                title: Text(
+                  (remark?['remark_name'] as String?)?.isNotEmpty == true
+                      ? '备注名：${remark!['remark_name']}'
+                      : '设置备注',
+                ),
+                subtitle: (remark?['remark_note'] as String?)?.isNotEmpty == true
+                    ? Text(remark!['remark_note'] as String)
+                    : null,
+                trailing: remarkBusy
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.chevron_right),
+                onTap: remarkBusy ? null : editRemark,
               ),
             if (own) ...[
               SwitchListTile(
@@ -415,7 +690,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
                     ? null
                     : (v) => setVisibility('public_resources', v),
               ),
-            if (own || profile?['public_resources'] == true)
+            if (widget.publicId == null && (own || profile?['public_resources'] == true))
               ListTile(
                 title: Text(own ? '个人资料夹' : 'TA的资料夹'),
                 trailing: const Icon(Icons.chevron_right),
@@ -434,7 +709,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
                 ),
               ),
             if (error != null) ListTile(title: Text(error!), onTap: load),
-            SingleChildScrollView(
+            if (widget.publicId == null) SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
@@ -469,7 +744,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
                     ? null
                     : (v) => setVisibility('public_bookmarks', v),
               ),
-            if (own || profile?['public_bookmarks'] == true)
+            if (widget.publicId == null && (own || profile?['public_bookmarks'] == true))
               ListTile(
                 leading: const Icon(Icons.bookmark_outline),
                 title: Text(own ? '我的收藏' : 'TA的收藏'),

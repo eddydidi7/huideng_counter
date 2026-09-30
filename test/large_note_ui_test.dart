@@ -56,7 +56,7 @@ void main() {
         find.byType(quill.QuillEditor),
       );
       expect(editor.controller.document.length, lessThanOrEqualTo(16001));
-      expect(find.text('阅读'), findsOneWidget);
+      expect(find.byTooltip('阅读模式'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.tap(find.byIcon(Icons.chevron_right));
       await tester.pumpAndSettle();

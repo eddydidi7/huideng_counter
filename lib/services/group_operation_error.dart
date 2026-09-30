@@ -24,6 +24,10 @@ const groupAdminMessages = {
   'REQUEST_UNAVAILABLE': '该申请已被处理',
   'QR_EXPIRED': '二维码已过期，请让群主刷新',
   'CHAT_INVALID_AVATAR': '群头像上传失败，请重新选择图片',
+  'GROUP_FRIEND_ADD_DISABLED': '群主已关闭“允许群成员互加好友”，暂时无法通过本群添加',
+  'CHAT_MENTION_LIMIT': '一条消息最多只能@50人',
+  'CHAT_INVALID_MENTION': '所@的成员已不在本群，请重新选择',
+  'CHAT_MENTION_ALL_DENIED': '只有群主和管理员可以使用@所有人',
 };
 
 String? groupAdminMessage(Object error) {

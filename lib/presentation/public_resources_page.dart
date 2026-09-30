@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 import 'resource_image_preview.dart';
+import 'windows_display.dart';
 import '../services/resource_upload_policy.dart';
 import '../services/apk_files.dart';
 import 'apk_file_card.dart';
@@ -22,6 +23,7 @@ class PublicResourcesPage extends StatefulWidget {
     required this.createApi,
     required this.settingsPage,
     this.onShare,
+    this.onSaveToGroup,
     this.initialResourceId,
   });
   final String Function(String, String) translate;
@@ -29,6 +31,7 @@ class PublicResourcesPage extends StatefulWidget {
   final Widget settingsPage;
   final String? initialResourceId;
   final Future<void> Function(PublicResource)? onShare;
+  final Future<void> Function(PublicResource)? onSaveToGroup;
   @override
   State<PublicResourcesPage> createState() => _PublicResourcesPageState();
 }
@@ -243,6 +246,10 @@ class _PublicResourcesPageState extends State<PublicResourcesPage>
         '文件校验失败，未打开文件，请重新下载。',
         'Verification failed. The file was not opened; download again.',
       ),
+      'FORBIDDEN' => tr(
+        '没有操作权限，或管理员已关闭上传者删除权限。请刷新列表后重试。',
+        'Permission denied, or uploader deletion is disabled. Refresh and retry.',
+      ),
       'UPDATE_REQUIRED' => tr(
         '此功能需要更新App后使用。',
         'Update the app to use this feature.',
@@ -412,6 +419,37 @@ class _PublicResourcesPageState extends State<PublicResourcesPage>
           context,
         ).showSnackBar(SnackBar(content: Text(message(e))));
       }
+    }
+  }
+
+  Future<void> deleteFile(PublicResource file) async {
+    if (busy || !file.canDelete || api is! ResourceDeletionApi) return;
+    final yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除这份公共资料？'),
+        content: const Text('将移除你在公共网盘中的这份资料。其他群或用户仍在使用的文件会保留。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (yes != true || !mounted) return;
+    setState(() => busy = true);
+    try {
+      await (api as ResourceDeletionApi).deleteResource(file);
+      if (mounted) await refresh();
+    } catch (e) {
+      if (mounted) setState(() => error = message(e));
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -708,32 +746,41 @@ class _PublicResourcesPageState extends State<PublicResourcesPage>
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  subtitle: Text(
-                    [
-                      if (isApk(file.name)) 'Android安装包',
-                      bytes(file.size),
-                      if (file.category.isNotEmpty) file.category,
-                      if (file.author.isNotEmpty) file.author,
-                      if (mine) status(file.status),
-                      if (file.description.isNotEmpty) file.description,
-                      if (mine && file.reviewNote.isNotEmpty) file.reviewNote,
-                    ].join(' · '),
-                    maxLines: mine ? 6 : 3,
-                    overflow: TextOverflow.ellipsis,
+                  subtitle: WindowsContentText(
+                    child: Text(
+                      [
+                        if (isApk(file.name)) 'Android安装包',
+                        bytes(file.size),
+                        if (file.category.isNotEmpty) file.category,
+                        if (file.author.isNotEmpty) file.author,
+                        if (mine) status(file.status),
+                        if (file.description.isNotEmpty) file.description,
+                        if (mine && file.reviewNote.isNotEmpty) file.reviewNote,
+                      ].join(' · '),
+                      maxLines: mine ? 6 : 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                   onTap:
                       busy || loading || !policy.canDownload || !file.published
                       ? null
                       : () => download(file),
                   trailing:
-                      file.published &&
-                          (widget.onShare != null || api is ResourceWebShareApi)
+                      (file.canDelete && api is ResourceDeletionApi) ||
+                          (file.published &&
+                              (widget.onShare != null ||
+                                  widget.onSaveToGroup != null ||
+                                  api is ResourceWebShareApi))
                       ? PopupMenuButton<String>(
                           onSelected: (v) {
-                            if (v == 'web') {
+                            if (v == 'delete') {
+                              deleteFile(file);
+                            } else if (v == 'web') {
                               copyWebLink(file);
                             } else if (v == 'share') {
                               widget.onShare!(file);
+                            } else if (v == 'group') {
+                              widget.onSaveToGroup!(file);
                             } else if (!busy &&
                                 !loading &&
                                 policy.canDownload) {
@@ -741,6 +788,18 @@ class _PublicResourcesPageState extends State<PublicResourcesPage>
                             }
                           },
                           itemBuilder: (_) => [
+                            if (widget.onSaveToGroup != null &&
+                                policy.groupTransferEnabled &&
+                                file.published)
+                              const PopupMenuItem(
+                                value: 'group',
+                                child: Text('转存到群文件'),
+                              ),
+                            if (file.canDelete && api is ResourceDeletionApi)
+                              const PopupMenuItem(
+                                value: 'delete',
+                                child: Text('删除我的文件'),
+                              ),
                             const PopupMenuItem(
                               value: 'download',
                               child: Text('下载并打开'),
@@ -857,8 +916,8 @@ class _ContributionDialogState extends State<_ContributionDialog> {
           const SizedBox(height: 12),
           Text(
             widget.tr(
-              '这是共享资料，不是个人备份。上传后由管理员管理，您不能自行删除。',
-              'This is a shared contribution, not a personal backup. Only the administrator can remove it.',
+              '上传后成为公共资料，请勿上传私人内容。',
+              'Uploaded files become public. Do not upload private content.',
             ),
           ),
           Text(

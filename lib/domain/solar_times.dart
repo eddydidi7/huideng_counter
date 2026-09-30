@@ -10,6 +10,7 @@ class SolarLocation {
     required this.savedOffsetMinutes,
     this.timezoneId,
     this.manual = false,
+    this.country = '',
   });
   final double latitude, longitude;
   final String name;
@@ -17,6 +18,8 @@ class SolarLocation {
   final int savedOffsetMinutes;
   final String? timezoneId;
   final bool manual;
+  final String country;
+  String get locationSource => manual ? 'manual' : 'gps';
   static bool _zonesReady = false;
   static void prepareZones() {
     if (!_zonesReady) {
@@ -55,6 +58,8 @@ class SolarLocation {
     'solar_location_updated_at': updatedAt.toUtc().toIso8601String(),
     'timezone_id': timezoneId,
     'manual': manual,
+    'locationSource': locationSource,
+    'country': country,
   };
   factory SolarLocation.fromJson(Map<String, dynamic> j) {
     final lat = (j['solar_latitude'] as num).toDouble();
@@ -74,7 +79,8 @@ class SolarLocation {
       updatedAt: DateTime.parse(j['solar_location_updated_at'] as String),
       savedOffsetMinutes: (j['solar_timezone_offset'] as num).toInt(),
       timezoneId: zone,
-      manual: j['manual'] == true,
+      manual: j['locationSource'] == 'manual' || j['manual'] == true,
+      country: j['country'] as String? ?? '',
     );
   }
 }

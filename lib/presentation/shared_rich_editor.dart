@@ -1,9 +1,24 @@
 import 'note_typography_page.dart';
+import 'windows_display.dart';
 import 'dart:convert';
 import 'routed_image.dart';
 import 'note_rich_content.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
+
+/// Use the visible text position, not a pixel percentage (images and headings
+/// have different heights in the editor and reader).
+int visibleNoteOffset(
+  GlobalKey<quill.EditorState> editorKey,
+  GlobalKey viewportKey,
+) {
+  final editor = editorKey.currentState?.renderEditor;
+  final viewport = viewportKey.currentContext?.findRenderObject();
+  if (editor == null || viewport is! RenderBox || !viewport.hasSize) return 0;
+  return editor
+      .getPositionForOffset(viewport.localToGlobal(const Offset(18, 8)))
+      .offset;
+}
 
 /// Shared editing surface for private notes and published long-form content.
 class SharedRichEditor extends StatelessWidget {
@@ -22,11 +37,14 @@ class SharedRichEditor extends StatelessWidget {
   final String? readingScope;
   @override
   Widget build(BuildContext context) {
-    Widget editor(quill.QuillEditorConfig resolved) => quill.QuillEditor.basic(
-      controller: controller,
-      config: resolved,
-      focusNode: focusNode,
-      scrollController: scrollController,
+    Widget editor(quill.QuillEditorConfig resolved) => WindowsContentText(
+      independentSize: readingScope != null,
+      child: quill.QuillEditor.basic(
+        controller: controller,
+        config: resolved,
+        focusNode: focusNode,
+        scrollController: scrollController,
+      ),
     );
     if (readingScope == null) return editor(config);
     final typography = NoteTypography.forScope(readingScope!);
@@ -38,7 +56,10 @@ class SharedRichEditor extends StatelessWidget {
             paragraph: quill.DefaultTextBlockStyle(
               TextStyle(
                 fontSize: typography.size,
-                height: typography.line,
+                height: NoteTypography.textHeight(
+                  typography.size,
+                  typography.line,
+                ),
                 color: Theme.of(context).colorScheme.onSurface,
                 fontFamily: typography.font == 'source'
                     ? 'SourceHanSans'

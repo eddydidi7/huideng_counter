@@ -36,6 +36,8 @@ Map<String, dynamic> response({
     'upload_enabled': upload,
     'download_enabled': download,
     'review_required': review,
+    'uploader_delete_enabled': true,
+    'group_transfer_enabled': true,
     'max_file_bytes': 1073741824,
     'total_bytes': 107374182400,
     'used_bytes': 1024,
@@ -59,7 +61,14 @@ Map<String, dynamic> transfer(
 Matcher failure(String code) =>
     isA<DriveFailure>().having((e) => e.code, 'code', code);
 
-class FakeLibrary implements ResourceLibraryApi {
+class FakeLibrary implements ResourceLibraryApi, ResourceDeletionApi {
+  final deleted = <String>[];
+  @override
+  Future<void> deleteResource(PublicResource file) async {
+    deleted.add(file.id);
+    data = {...data, 'files': <Map<String, dynamic>>[]};
+  }
+
   Map<String, dynamic> data = response();
   List<Map<String, dynamic>>? mineFiles;
   final queries = <String>[];
@@ -385,10 +394,68 @@ void main() {
       expect(find.text('回收站'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       await show(tester, null);
-      expect(find.textContaining('请先在'), findsOneWidget);
+      expect(find.textContaining('正在建立游客身份'), findsOneWidget);
       expect(find.text('上传资料'), findsNothing);
     },
   );
+  testWidgets(
+    'public resource menu saves the selected reference to group files',
+    (tester) async {
+      final fake = FakeLibrary();
+      PublicResource? selected;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PublicResourcesPage(
+            translate: (zh, en) => zh,
+            createApi: () => fake,
+            settingsPage: const SizedBox(),
+            onSaveToGroup: (file) async {
+              selected = file;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(PopupMenuButton<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('转存到群文件'));
+      await tester.pumpAndSettle();
+      expect(selected?.id, (fake.data['files'] as List).first['id']);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'owner deletion requires confirmation and refreshes the reference list',
+    (tester) async {
+      final fake = FakeLibrary()
+        ..data = response(
+          files: [
+            {...fileJson(), 'can_delete': true},
+          ],
+        );
+      await show(tester, fake);
+      await tester.tap(find.byType(PopupMenuButton<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除我的文件'));
+      await tester.pumpAndSettle();
+      expect(fake.deleted, isEmpty);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(fake.deleted, isEmpty);
+      await tester.tap(find.byType(PopupMenuButton<String>).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除我的文件'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      expect(fake.deleted, ['resource-a']);
+      expect(find.text('学修资料.pdf'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final width in [320.0, 412.0]) {
     for (final english in [false, true]) {
       testWidgets(

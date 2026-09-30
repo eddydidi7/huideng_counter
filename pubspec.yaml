@@ -1,7 +1,7 @@
 ﻿name: huideng_counter
 description: Manjushri Counter - local-first cross-platform recitation counter.
 publish_to: none
-version: 1.0.56+57
+version: 1.0.71+72
 environment:
   sdk: '>=3.10.0 <4.0.0'
 dependencies:
@@ -18,6 +18,7 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.5
   file_picker: ^10.3.10
+  desktop_drop: ^0.8.4
   url_launcher: ^6.3.2
   uuid: ^4.5.2
   app_links: 7.2.1
@@ -34,6 +35,7 @@ dependencies:
   geolocator: 14.0.2
   nrel_spa: ^1.2.0
   shared_preferences: 2.5.5
+  package_info_plus: 9.0.1
   flutter_local_notifications: 19.5.0
   timezone: ^0.10.1
   record: ^7.1.1

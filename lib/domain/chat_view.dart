@@ -60,3 +60,29 @@ String chatListTime(dynamic value) {
   }
   return '${date.month}/${date.day}';
 }
+
+const fileAssistantRoomId = 'local:file-assistant';
+
+List<Map<String, dynamic>> orderedChatConversations(
+  List<Map<String, dynamic>> rooms,
+  List<String> manualOrder,
+) {
+  final ranks = {
+    for (var i = 0; i < manualOrder.length; i++) manualOrder[i]: i,
+  };
+  return rooms.toList()..sort((a, b) {
+    final pinned =
+        (b['pinned'] == true ? 1 : 0) - (a['pinned'] == true ? 1 : 0);
+    if (pinned != 0) return pinned;
+    if (manualOrder.isNotEmpty) {
+      final rank = (ranks[a['id']] ?? manualOrder.length).compareTo(
+        ranks[b['id']] ?? manualOrder.length,
+      );
+      if (rank != 0) return rank;
+    }
+    final date = (b['updated_at'] as String? ?? '').compareTo(
+      a['updated_at'] as String? ?? '',
+    );
+    return date != 0 ? date : (a['id'] as String).compareTo(b['id'] as String);
+  });
+}

@@ -66,13 +66,13 @@ class NoteCategories {
     final all = (await load()).names;
     final error = validate(value, all.where((n) => n != from).toList());
     if (error != null) throw StateError(error);
-    await notes.setCategory(await notes.idsInCategory(from), value);
+    await notes.replaceCategory(from, value);
     await _write([for (final n in all) n == from ? value : n]);
   }
 
-  /// Notes are never deleted: they move to uncategorized.
+  /// Notes are never deleted; other memberships remain, or become uncategorized.
   Future<void> delete(String name) async {
-    await notes.setCategory(await notes.idsInCategory(name), '');
+    await notes.replaceCategory(name, '');
     await _write((await load()).names.where((n) => n != name).toList());
   }
 

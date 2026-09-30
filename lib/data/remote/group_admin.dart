@@ -63,6 +63,8 @@ class GroupAdmin {
   Future<void> settings(Map<String, dynamic> values) =>
       call('settings', {'settings': values});
   Future<void> allMute(bool enabled) => call('all_mute', {'enabled': enabled});
+  Future<void> memberFriendAdd(bool enabled) =>
+      call('member_friend_add', {'enabled': enabled});
   Future<void> transferOwner(String user) =>
       call('transfer_owner', {'user_id': user});
   Future<void> myNickname(String nickname) =>

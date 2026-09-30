@@ -185,8 +185,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('确认发布'), findsNothing);
     await tester.pumpAndSettle();
-    expect(repo.requests.single['title'], '');
-    expect(repo.requests.single['body'], '只有正文也可以发布\n完整内容');
+    expect(repo.requests.single['title'], '只有正文也可以发布');
+    expect(repo.requests.single['body'], '完整内容');
     expect(repo.requests.single['attachments'], isEmpty);
     await tester.pumpWidget(const SizedBox.shrink());
     app.dispose();
@@ -324,7 +324,7 @@ void main() {
       expect(find.text('分享到群聊'), findsOneWidget);
       await tester.tap(find.text('分享给好友'));
       await tester.pumpAndSettle();
-      expect(find.text('请先登录后分享到聊天'), findsOneWidget);
+      expect(find.text('聊天身份尚未就绪'), findsOneWidget);
       expect(find.byType(SelectableText), findsOneWidget);
       expect(tester.takeException(), isNull);
       app.dispose();

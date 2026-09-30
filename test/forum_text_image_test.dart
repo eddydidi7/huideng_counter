@@ -5,9 +5,9 @@ import 'package:huideng_counter/services/forum_text_image.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('automatic title keeps emoji intact and uses first line', () {
-    expect(forumAutomaticTitle('  每日一善\n完整正文'), '每日一善 完整正文');
+    expect(forumAutomaticTitle('  每日一善\n完整正文'), '每日一善');
     final text = List.filled(90, '🙏').join();
-    expect(forumAutomaticTitle(text), '${List.filled(28, '🙏').join()}……');
+    expect(forumAutomaticTitle(text), text);
   });
   test(
     'short and long Chinese bodies produce decodable bounded PNG covers',

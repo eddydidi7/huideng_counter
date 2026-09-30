@@ -1,6 +1,7 @@
 import '../services/resource_upload_policy.dart';
 import 'jieyuan_fields.dart';
 import '../domain/content_limits.dart';
+import '../domain/post_title.dart';
 import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 import '../data/local/forum_draft_store.dart';
@@ -568,7 +569,8 @@ class _ForumComposePageState extends State<ForumComposePage>
       final postBody = postKind == 'article'
           ? rich.document.toPlainText().trimRight()
           : body.text.trim();
-      if ((postBody.isEmpty && (reply || files.isEmpty)) ||
+      if ((postBody.isEmpty &&
+              (reply || (files.isEmpty && title.text.trim().isEmpty))) ||
           (reply
               ? articleContentCharacterCount(postBody) > 5000
               : !isArticleContentWithinLimit(postBody))) {
@@ -612,14 +614,19 @@ class _ForumComposePageState extends State<ForumComposePage>
         }
       }
       final attachments = await uploadFiles();
+      // Derive a request without mutating the draft/controllers. Retrying the
+      // same request cannot strip the prefix a second time.
+      final content = !reply && category != 'jieyuan'
+          ? prepareNewPostText(title.text.trim(), postBody)
+          : PostTitleText(title.text.trim(), postBody, 0);
       await widget.repository.action(reply ? 'reply' : 'create', {
         'id': requestId,
-        'body': postBody,
+        'body': content.body,
         'nickname': nickname.text.trim(),
         if (reply) 'post_id': widget.postId,
         'slug': widget.shareSlug,
         if (!reply) ...{
-          'title': title.text.trim(),
+          'title': content.title,
           'category_id': category,
           if (category == 'jieyuan') 'jieyuan': jieyuan,
           'tags': tagList,
@@ -627,7 +634,7 @@ class _ForumComposePageState extends State<ForumComposePage>
           'post_kind': postKind,
           'access_level': accessLevel,
           'rich_body': postKind == 'article'
-              ? rich.document.toDelta().toJson()
+              ? rich.document.toDelta().slice(content.consumed).toJson()
               : null,
           'source_note_id': widget.sourceNoteId,
         },

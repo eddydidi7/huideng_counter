@@ -125,6 +125,34 @@ class CloudController extends ChangeNotifier with WidgetsBindingObserver {
             'session_present': state.session != null,
             'expired': state.session?.isExpired,
           });
+          // Registration now finishes when the user taps the confirmation
+          // link in their email (huideng://login-callback), not by typing a
+          // code. detectSessionInUri recovers the session from that deep
+          // link and fires *some* auth event here; rather than guess which
+          // one, just recognise "this session matches the pending guest
+          // upgrade" on any event where the user is no longer anonymous.
+          if (!busy && state.session != null && !state.session!.user.isAnonymous) {
+            final pendingUpgrade = await SecureAuthStorage.vault.read(
+              key: 'huideng.guest-upgrade.user-id',
+            );
+            if (pendingUpgrade != null &&
+                pendingUpgrade == state.session!.user.id) {
+              try {
+                if (userId != pendingUpgrade || notesWorker == null) {
+                  await _activate(pendingUpgrade, state.session!.user.email);
+                }
+                notesWorker?.authenticationChanged();
+                await SecureAuthStorage.vault.delete(
+                  key: 'huideng.guest-upgrade.user-id',
+                );
+                unawaited(syncNow());
+              } catch (e) {
+                SyncDiagnostics.record('guest_upgrade_auto_activate_error', {
+                  'error_type': e.runtimeType.toString(),
+                });
+              }
+            }
+          }
           if (!busy &&
               state.session != null &&
               !state.session!.user.isAnonymous &&
@@ -305,37 +333,6 @@ class CloudController extends ChangeNotifier with WidgetsBindingObserver {
       await client!.auth.updateUser(
         UserAttributes(email: address.trim(), password: password),
       );
-    } finally {
-      busy = false;
-      changed();
-    }
-  }
-
-  Future<void> completeGuestRegistration(String address, String token) async {
-    if (!ready || busy || client == null) throw StateError('AUTH_NOT_READY');
-    final original = await SecureAuthStorage.vault.read(
-      key: 'huideng.guest-upgrade.user-id',
-    );
-    if (original == null || client!.auth.currentUser?.id != original) {
-      throw StateError('GUEST_UPGRADE_SESSION_CHANGED');
-    }
-    busy = true;
-    changed();
-    try {
-      await client!.auth.verifyOTP(
-        email: address.trim(),
-        token: token.trim(),
-        type: OtpType.emailChange,
-      );
-      final upgraded = client!.auth.currentUser;
-      if (upgraded == null || upgraded.id != original || upgraded.isAnonymous) {
-        throw StateError('GUEST_UPGRADE_NOT_CONFIRMED');
-      }
-      await _activate(original, upgraded.email ?? address.trim());
-      await SecureAuthStorage.vault.delete(key: 'huideng.guest-upgrade.user-id');
-      // The existing local database remains the source of truth until its
-      // normal queued sync succeeds; nothing is deleted on a failed sync.
-      await syncNow();
     } finally {
       busy = false;
       changed();

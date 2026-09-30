@@ -17,6 +17,7 @@ class SolarLocationService {
   final http.Client Function()? clientFactory;
   static const nameCacheKey = 'solar_place_name_v1';
   static const cacheKey = 'solar_location_v1';
+  static int _selectionRevision = 0;
   Future<SolarLocation?> load() async {
     final raw = (await SharedPreferences.getInstance()).getString(cacheKey);
     if (raw == null) return null;
@@ -29,6 +30,7 @@ class SolarLocationService {
   }
 
   Future<void> save(SolarLocation location) async {
+    _selectionRevision++;
     final ok = await (await SharedPreferences.getInstance()).setString(
       cacheKey,
       jsonEncode(location.toJson()),
@@ -40,6 +42,7 @@ class SolarLocationService {
     SolarLocation? previous,
     bool explicit = false,
   }) async {
+    final revision = _selectionRevision;
     if (!await Geolocator.isLocationServiceEnabled()) {
       throw const SolarLocationFailure('disabled');
     }
@@ -89,7 +92,7 @@ class SolarLocationService {
       savedOffsetMinutes: DateTime.now().timeZoneOffset.inMinutes,
     );
     // Commit GPS immediately. Geocoding must never delay solar calculations.
-    await save(fresh);
+    if (revision == _selectionRevision) await save(fresh);
     return fresh;
   }
 

@@ -58,6 +58,13 @@ android {
             signingConfig = signingConfigs.getByName("release")
         }
     }
+
+    // Flutter analyze runs before release builds. Skip Android's duplicate
+    // release lint pass, which can retain third-party plugin lint caches and
+    // block a subsequent APK build on Windows.
+    lint {
+        checkReleaseBuilds = false
+    }
 }
 
 kotlin {

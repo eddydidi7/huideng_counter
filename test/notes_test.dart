@@ -10,6 +10,39 @@ void main() {
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfiNoIsolate;
   test(
+    'quick access and additive notebooks preserve content and independent flags',
+    () async {
+      final db = await LocalDatabase.openAt(inMemoryDatabasePath);
+      try {
+        final repo = NotesRepository(db);
+        final note = await repo.save({
+          'body': '原始正文',
+          'isPinned': 1,
+          'isFavorite': 1,
+          'source_meta': '{"origin":"preserve"}',
+        });
+        final id = note['id'] as String;
+        await repo.setQuickAccess(id, true);
+        await repo.addCategories([id], ['甲', '乙', '甲']);
+        expect(NotesRepository.categoriesOf(await repo.get(id)), ['甲', '乙']);
+        expect(await repo.categoryCounts(), {'甲': 1, '乙': 1});
+        await repo.replaceCategory('甲', '丙');
+        await repo.replaceCategory('乙', '');
+        expect(NotesRepository.categoriesOf(await repo.get(id)), ['丙']);
+        await repo.setQuickAccess(id, false);
+        final saved = await repo.get(id);
+        expect(NotesRepository.isQuickAccess(saved), isFalse);
+        expect(saved['isPinned'], 1);
+        expect(saved['isFavorite'], 1);
+        expect(saved['body'], '原始正文');
+        expect(saved['source_meta'].toString(), contains('preserve'));
+        expect(saved['updatedAt'], note['updatedAt']);
+      } finally {
+        await db.close();
+      }
+    },
+  );
+  test(
     'notes reject stale saves; Chinese search and trash restore retain revisions',
     () async {
       final db = await LocalDatabase.openAt(inMemoryDatabasePath);
@@ -109,4 +142,3 @@ void main() {
     },
   );
 }
-
