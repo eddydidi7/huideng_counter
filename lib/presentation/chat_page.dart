@@ -210,6 +210,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
     transferActivity.addListener(transferChanged);
     unawaited(transferActivity.load());
     AssistantManager.instance.addListener(transferChanged);
+    ownNicknameVersion.addListener(ownNicknameChanged);
     initialize();
     SharedPreferences.getInstance().then((p) {
       if (mounted) {
@@ -292,6 +293,26 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
 
   void transferChanged() {
     if (mounted) setState(() {});
+  }
+
+  void ownNicknameChanged() {
+    if (!savingNickname) unawaited(refreshOwnNickname());
+  }
+
+  Future<void> refreshOwnNickname() async {
+    final repo = repository;
+    if (repo == null || !mounted) return;
+    try {
+      final name = await repo.remote.ownNickname();
+      if (mounted && name != null) {
+        await repo.store.write('own_profile', [
+          {'nickname': name},
+        ]);
+        if (mounted) setState(() => myNickname = name);
+      }
+    } catch (_) {
+      /* Picked up again on the next periodic refresh(). */
+    }
   }
 
   Future<void> refresh() async {
@@ -381,6 +402,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
   void dispose() {
     transferActivity.removeListener(transferChanged);
     AssistantManager.instance.removeListener(transferChanged);
+    ownNicknameVersion.removeListener(ownNicknameChanged);
     WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     debounce?.cancel();
@@ -453,6 +475,7 @@ class _ChatHomeState extends State<ChatHome> with WidgetsBindingObserver {
           error = null;
         });
       }
+      bumpOwnNicknameVersion();
     } catch (e) {
       if (mounted) setState(() => error = chatError(app, e));
     } finally {

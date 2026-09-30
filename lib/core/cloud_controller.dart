@@ -125,12 +125,12 @@ class CloudController extends ChangeNotifier with WidgetsBindingObserver {
             'session_present': state.session != null,
             'expired': state.session?.isExpired,
           });
-          // Registration now finishes when the user taps the confirmation
-          // link in their email (huideng://login-callback), not by typing a
-          // code. detectSessionInUri recovers the session from that deep
-          // link and fires *some* auth event here; rather than guess which
-          // one, just recognise "this session matches the pending guest
-          // upgrade" on any event where the user is no longer anonymous.
+          // beginGuestRegistration's updateUser() call flips is_anonymous
+          // synchronously (Supabase Auth "Confirm email" must be off — see
+          // deployment notes); this fires *some* auth event here. Rather
+          // than guess which one, just recognise "this session matches the
+          // pending guest upgrade" on any event where the user is no longer
+          // anonymous.
           if (!busy && state.session != null && !state.session!.user.isAnonymous) {
             final pendingUpgrade = await SecureAuthStorage.vault.read(
               key: 'huideng.guest-upgrade.user-id',

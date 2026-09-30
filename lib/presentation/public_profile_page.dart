@@ -421,12 +421,35 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   Future<void> edit() async {
+    final nickname = TextEditingController(
+      text: data?['profile']?['nickname'] as String? ?? '',
+    );
     final bio = TextEditingController(text: data?['profile']?['bio'] ?? '');
-    final value = await showDialog<String>(
+    final value = await showDialog<(String, String)>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('个性简介'),
-        content: TextField(controller: bio, maxLength: 500, maxLines: 4),
+        title: const Text('编辑个人资料'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nickname,
+              maxLength: 40,
+              decoration: const InputDecoration(labelText: '昵称'),
+            ),
+            const Text(
+              '昵称随时可改，不影响你的个人号 ID、好友关系、聊天记录或已发布内容。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: bio,
+              maxLength: 500,
+              maxLines: 4,
+              decoration: const InputDecoration(labelText: '个性简介'),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             onPressed: () => shareProfile(copy: false),
@@ -443,21 +466,31 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(ctx, bio.text),
+            onPressed: () => Navigator.pop(ctx, (nickname.text, bio.text)),
             child: const Text('保存'),
           ),
         ],
       ),
     );
+    nickname.dispose();
     bio.dispose();
     if (value == null) return;
+    final (newNickname, newBio) = value;
     try {
+      if (newNickname.trim().isNotEmpty &&
+          newNickname.trim() != (data?['profile']?['nickname'] as String? ?? '')) {
+        await ChatRemote(widget.app.cloud!.client!, widget.userId).call(
+          'profile',
+          {'nickname': newNickname.trim()},
+        );
+        bumpOwnNicknameVersion();
+      }
       await widget.app.cloud!.client!.rpc(
         'community_profile_v1',
         params: {
           'p_user': widget.userId,
           'p_data': {
-            'bio': value,
+            'bio': newBio,
             'show_account': data?['profile']?['show_account'] == true,
           },
         },

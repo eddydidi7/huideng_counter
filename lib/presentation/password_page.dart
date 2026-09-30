@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/app_controller.dart';
 import '../core/cloud_controller.dart';
 import '../core/sync_diagnostics.dart';
+import '../domain/email_suggest.dart';
 import 'dart:io';
 import 'dart:async';
 import 'package:http/http.dart' as http;
@@ -25,7 +26,9 @@ class PasswordPage extends StatefulWidget {
 }
 
 class _PasswordPageState extends State<PasswordPage> {
-  final mail = TextEditingController(), old = TextEditingController();
+  final mail = TextEditingController(),
+      mail2 = TextEditingController(),
+      old = TextEditingController();
   final code = TextEditingController(),
       password = TextEditingController(),
       repeat = TextEditingController();
@@ -35,10 +38,9 @@ class _PasswordPageState extends State<PasswordPage> {
       sent = false,
       hidePassword = true,
       hideRepeat = true,
-      waitingForConfirmation = false;
+      finishingRegistration = false;
   int seconds = 0;
   Timer? countdown;
-  Timer? confirmTimer;
   String? message;
   AppController get app => widget.app;
   bool get changing => widget.action == PasswordAction.change;
@@ -48,35 +50,17 @@ class _PasswordPageState extends State<PasswordPage> {
     super.initState();
     mail.text = widget.email;
     client = CloudController.isolatedAuthClient();
-  }
-
-  // Registration now finishes when the user taps the confirmation link in
-  // their email, not by typing a code (see cloud_controller.dart). This page
-  // just polls the main app session for "no longer anonymous" so it can
-  // report success without any further action from the user.
-  void startConfirmationPolling() {
-    confirmTimer?.cancel();
-    confirmTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (app.cloud?.client?.auth.currentUser?.isAnonymous == false) {
-        confirmTimer?.cancel();
-        if (mounted) {
-          setState(() {
-            waitingForConfirmation = false;
-            message = app.text(
-              '注册成功！可以返回上一页继续使用。',
-              'Registration complete! You can go back now.',
-            );
-          });
-        }
-      }
-    });
+    for (final field in [mail, mail2]) {
+      field.addListener(() {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   @override
   void dispose() {
     countdown?.cancel();
-    confirmTimer?.cancel();
-    for (final field in [mail, old, code, password, repeat]) {
+    for (final field in [mail, mail2, old, code, password, repeat]) {
       field.dispose();
     }
     client.dispose();
@@ -129,33 +113,69 @@ class _PasswordPageState extends State<PasswordPage> {
     }
   }
 
+  /// Registration: no verification code and no confirmation email. The two
+  /// email fields and two password fields are the only confirmation step;
+  /// beginGuestRegistration converts the current anonymous session in place
+  /// (see cloud_controller.dart), which takes effect immediately as long as
+  /// Supabase Auth's "Confirm email" setting is off — see the deployment
+  /// notes shipped with this change for the exact dashboard toggle.
+  Future<void> register() => run(() async {
+    final email1 = mail.text.trim();
+    final email2 = mail2.text.trim();
+    if (!validEmail(email1)) {
+      throw const AuthException('Invalid email', code: 'email_address_invalid');
+    }
+    if (!sameEmail(email1, email2)) {
+      setState(
+        () => message = app.text(
+          '两次输入的邮箱不一致，请重新检查。',
+          'The two email addresses do not match.',
+        ),
+      );
+      return;
+    }
+    if (password.text.length < 8 || password.text != repeat.text) {
+      setState(
+        () => message = app.text(
+          '密码至少 8 位，两次输入须一致。',
+          'Use at least 8 characters and enter the same password twice.',
+        ),
+      );
+      return;
+    }
+    await app.cloud!.beginGuestRegistration(normalizeEmail(email1), password.text);
+    // updateUser() on the anonymous session normally flips is_anonymous
+    // synchronously when "Confirm email" is off. Poll briefly as a safety
+    // net in case of a slower round trip, or in case that dashboard setting
+    // hasn't been turned off yet, in which case we tell the user why.
+    if (mounted) setState(() => finishingRegistration = true);
+    var confirmed = app.cloud?.client?.auth.currentUser?.isAnonymous == false;
+    for (var i = 0; i < 25 && !confirmed && mounted; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      confirmed = app.cloud?.client?.auth.currentUser?.isAnonymous == false;
+    }
+    if (!mounted) return;
+    setState(() {
+      finishingRegistration = false;
+      message = confirmed
+          ? app.text('注册成功！可以返回上一页继续使用。', 'Registration complete! You can go back now.')
+          : app.text(
+              '账号已创建，但尚未确认。请检查邮箱是否收到确认邮件；如果没有，请联系管理员检查后台的“Confirm email”设置。',
+              'Account created but not yet confirmed. Check your email for a confirmation link, or contact the administrator to check the "Confirm email" setting.',
+            );
+    });
+  });
+
   Future<void> send() => run(() async {
     if (!validEmail(mail.text)) {
       throw const AuthException('Invalid email', code: 'email_address_invalid');
     }
-    if (registering) {
-      if (password.text.length < 8 || password.text != repeat.text) {
-        throw const AuthException('Password mismatch', code: 'weak_password');
-      }
-      await app.cloud!.beginGuestRegistration(mail.text, password.text);
-    } else {
-      await client.auth.resetPasswordForEmail(mail.text.trim());
-    }
+    await client.auth.resetPasswordForEmail(mail.text.trim());
     if (mounted) {
       setState(() {
-        message = registering
-            ? app.text(
-                '确认邮件已发送，请查收邮箱并点击邮件中的链接完成注册。完成后本页会自动提示，无需输入验证码。',
-                'Confirmation email sent. Open your inbox and tap the link to finish registering; this page updates automatically once you do, no code needed.',
-              )
-            : app.text(
-                '验证码已发送，请检查邮箱。',
-                'Verification code sent. Check your email.',
-              );
+        message = app.text('验证码已发送，请检查邮箱。', 'Verification code sent. Check your email.');
         sent = true;
-        if (registering) waitingForConfirmation = true;
       });
-      if (registering) startConfirmationPolling();
       seconds = 60;
       countdown?.cancel();
       countdown = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -222,6 +242,55 @@ class _PasswordPageState extends State<PasswordPage> {
       );
     }
   });
+
+  Widget emailField(
+    TextEditingController controller, {
+    required String label,
+    required bool enabled,
+  }) {
+    final suggestions = emailDomainSuggestions(controller.text);
+    final typoFix = emailTypoSuggestion(controller.text);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: controller,
+          enabled: enabled,
+          keyboardType: TextInputType.emailAddress,
+          decoration: InputDecoration(labelText: label),
+        ),
+        if (typoFix != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: InkWell(
+              onTap: enabled
+                  ? () => setState(() => controller.text = typoFix)
+                  : null,
+              child: Text(
+                app.text('是否为 $typoFix？点击使用', 'Did you mean $typoFix? Tap to use'),
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          )
+        else if (suggestions.isNotEmpty && enabled)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                for (final s in suggestions)
+                  ActionChip(
+                    label: Text(s),
+                    onPressed: () => setState(() => controller.text = s),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -239,12 +308,37 @@ class _PasswordPageState extends State<PasswordPage> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            TextField(
-              controller: mail,
-              enabled: !busy && !verified && !changing && !waitingForConfirmation,
-              keyboardType: TextInputType.emailAddress,
-              decoration: InputDecoration(labelText: app.text('邮箱', 'Email')),
-            ),
+            if (registering)
+              emailField(
+                mail,
+                label: app.text('邮箱', 'Email'),
+                enabled: !busy && !finishingRegistration,
+              )
+            else
+              TextField(
+                controller: mail,
+                enabled: !busy && !verified && !changing,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(labelText: app.text('邮箱', 'Email')),
+              ),
+            if (registering) ...[
+              const SizedBox(height: 8),
+              emailField(
+                mail2,
+                label: app.text('再次输入邮箱', 'Confirm email'),
+                enabled: !busy && !finishingRegistration,
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(
+                  app.text(
+                    '请再次确认邮箱。邮箱填写错误以后，将无法通过“忘记密码”找回账号。',
+                    'Double-check your email. If it is wrong, you will not be able to recover your account with "Forgot password".',
+                  ),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
             if (changing)
               TextField(
                 controller: old,
@@ -265,46 +359,41 @@ class _PasswordPageState extends State<PasswordPage> {
                 ),
               ),
             ],
-            if (!changing) ...[
-              TextField(
-                controller: password,
-                enabled: !busy && !waitingForConfirmation,
-                obscureText: hidePassword,
-                enableSuggestions: false,
-                autocorrect: false,
-                decoration: InputDecoration(
-                  labelText: app.text(registering ? '密码（至少 8 位）' : '新密码（至少 8 位）', 'Password (at least 8 characters)'), suffixIcon: IconButton(icon: Icon(hidePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined), onPressed: () => setState(() => hidePassword = !hidePassword)),
-                ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: password,
+              enabled: !busy && !finishingRegistration,
+              obscureText: hidePassword,
+              enableSuggestions: false,
+              autocorrect: false,
+              decoration: InputDecoration(
+                labelText: app.text(registering ? '密码（至少 8 位）' : '新密码（至少 8 位）', 'Password (at least 8 characters)'), suffixIcon: IconButton(icon: Icon(hidePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined), onPressed: () => setState(() => hidePassword = !hidePassword)),
               ),
-              TextField(
-                controller: repeat,
-                enabled: !busy && !waitingForConfirmation,
-                obscureText: hideRepeat,
-                enableSuggestions: false,
-                autocorrect: false,
-                decoration: InputDecoration(
-                  labelText: app.text(registering ? '确认密码' : '确认新密码', 'Confirm password'), suffixIcon: IconButton(icon: Icon(hideRepeat ? Icons.visibility_outlined : Icons.visibility_off_outlined), onPressed: () => setState(() => hideRepeat = !hideRepeat)),
-                ),
+            ),
+            TextField(
+              controller: repeat,
+              enabled: !busy && !finishingRegistration,
+              obscureText: hideRepeat,
+              enableSuggestions: false,
+              autocorrect: false,
+              decoration: InputDecoration(
+                labelText: app.text(registering ? '确认密码' : '确认新密码', 'Confirm password'), suffixIcon: IconButton(icon: Icon(hideRepeat ? Icons.visibility_outlined : Icons.visibility_off_outlined), onPressed: () => setState(() => hideRepeat = !hideRepeat)),
               ),
-            ],
+            ),
             const SizedBox(height: 20),
-            if (registering)
-              FilledButton(
-                onPressed: busy || seconds > 0 ? null : send,
-                child: Text(
-                  seconds > 0
-                      ? '重新发送（$seconds秒）'
-                      : sent
-                      ? app.text('重新发送确认邮件', 'Resend confirmation email')
-                      : app.text('发送确认邮件', 'Send confirmation email'),
-                ),
-              )
-            else
-              FilledButton(
-                onPressed: busy ? null : submit,
-                child: Text(app.text('保存新密码', 'Save new password')),
+            FilledButton(
+              onPressed: busy || finishingRegistration
+                  ? null
+                  : registering
+                  ? register
+                  : submit,
+              child: Text(
+                registering
+                    ? app.text('注册', 'Register')
+                    : app.text('保存新密码', 'Save new password'),
               ),
-            if (waitingForConfirmation) ...[
+            ),
+            if (finishingRegistration) ...[
               const SizedBox(height: 12),
               const Center(child: CircularProgressIndicator()),
             ],

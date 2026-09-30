@@ -23,6 +23,16 @@ void bumpChatAvatarVersion() {
   _avatarVersion.value++;
 }
 
+/// Bumped whenever the signed-in user's own nickname changes, from any
+/// entry point (profile page, chat settings sheet). Screens that keep their
+/// own cached copy of "my nickname" (e.g. ChatPage's app bar) listen to
+/// this to refetch immediately instead of waiting for their next periodic
+/// refresh. This does not attempt to live-refresh every place a nickname
+/// is shown app-wide (forum posts, group member lists, etc.) — those
+/// already refetch on their own normal reload cycle, same as before.
+final ownNicknameVersion = ValueNotifier(0);
+void bumpOwnNicknameVersion() => ownNicknameVersion.value++;
+
 final _signedAvatars = <String, ({DateTime until, String url})>{};
 
 /// All user-avatar surfaces use this widget. Taps open the shared profile;
