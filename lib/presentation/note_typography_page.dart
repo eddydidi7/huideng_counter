@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'stepper_slider.dart';
 
 class NoteTypography extends ChangeNotifier {
-  static const minSize = 10.0, maxSize = 40.0, defaultSize = 20.0;
-  static const sizeDivisions = 30;
+  static const minSize = 8.0, maxSize = 40.0, defaultSize = 18.0;
+  static const sizeDivisions = 32;
   static double normalizeSize(dynamic value) => value is num && value.isFinite
       ? value.toDouble().clamp(minSize, maxSize).roundToDouble()
       : defaultSize;
@@ -81,14 +82,16 @@ class _TypographyState extends State<NoteTypographyPage> {
     double max,
     ValueChanged<double> update, {
     int? divisions,
+    double step = 1,
   }) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text('$title：${value.toStringAsFixed(1)}'),
-      Slider(
+      StepperSlider(
         value: value,
         min: min,
         max: max,
+        step: step,
         divisions: divisions,
         onChanged: (v) => change(() => update(v)),
       ),
@@ -133,7 +136,14 @@ class _TypographyState extends State<NoteTypographyPage> {
             (v) => settings.size = NoteTypography.normalizeSize(v),
             divisions: NoteTypography.sizeDivisions,
           ),
-          slider('行距', settings.line, 1.2, 2.6, (v) => settings.line = v),
+          slider(
+            '行距',
+            settings.line,
+            1.2,
+            2.6,
+            (v) => settings.line = v,
+            step: .05,
+          ),
           slider(
             '段落间距',
             settings.paragraph,

@@ -9,7 +9,7 @@ import 'package:huideng_counter/presentation/note_reader_page.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('legacy sizes use the new bounds and integer steps', () async {
-    for (final entry in {8.0: 10.0, 60.0: 40.0, 23.6: 24.0}.entries) {
+    for (final entry in {5.0: 8.0, 60.0: 40.0, 23.6: 24.0}.entries) {
       final scope = 'legacy-size-${entry.key}';
       SharedPreferences.setMockInitialValues({
         'reader.preferences.v1.$scope': jsonEncode({'size': entry.key}),
@@ -21,9 +21,21 @@ void main() {
       await settings.reload();
       expect(settings.size, entry.value);
     }
-    expect(NoteTypography.normalizeSize(null), 20);
-    expect(NoteTypography.normalizeSize(double.nan), 20);
-    expect(NoteTypography.sizeDivisions, 30);
+    expect(NoteTypography.normalizeSize(null), 18);
+    expect(NoteTypography.normalizeSize(double.nan), 18);
+    expect(NoteTypography.sizeDivisions, 32);
+  });
+
+  test('a value an existing user already saved under the old 10-40 bounds is preserved exactly', () async {
+    for (final size in [10.0, 12.0, 20.0, 22.0]) {
+      final scope = 'existing-value-$size';
+      SharedPreferences.setMockInitialValues({
+        'reader.preferences.v1.$scope': jsonEncode({'size': size}),
+      });
+      final settings = NoteTypography.forScope(scope);
+      await settings.ready;
+      expect(settings.size, size);
+    }
   });
 
   testWidgets('typography slider updates preview and saves in unit steps', (
@@ -36,10 +48,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     final slider = tester.widget<Slider>(find.byType(Slider).first);
-    expect(slider.min, 10);
+    expect(slider.min, 8);
     expect(slider.max, 40);
-    expect(slider.divisions, 30);
-    expect(slider.value, 20);
+    expect(slider.divisions, 32);
+    expect(slider.value, 18);
     slider.onChanged!(31);
     await tester.pumpAndSettle();
     final preview = tester.widget<Text>(
@@ -62,8 +74,8 @@ void main() {
       });
       final settings = NoteTypography.forScope(scope);
       await settings.ready;
-      expect(settings.size, 20);
-      for (final size in [10.0, 40.0]) {
+      expect(settings.size, 18);
+      for (final size in [8.0, 40.0]) {
         settings.size = size;
         await settings.save();
         settings.size = 22;
@@ -82,7 +94,7 @@ void main() {
   );
 
   for (final width in [360.0, 1440.0]) {
-    for (final size in [10.0, 40.0]) {
+    for (final size in [8.0, 40.0]) {
       testWidgets('reader restores $size at width $width without overflow', (
         tester,
       ) async {

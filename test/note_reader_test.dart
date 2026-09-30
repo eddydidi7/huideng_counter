@@ -91,10 +91,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(TextField), findsNothing);
       expect(find.text('1.4x'), findsOneWidget);
-      await tester.tap(find.text('播放 / 继续'));
+      await tester.tap(find.byTooltip('播放 / 继续'));
       await tester.pumpAndSettle();
       expect(playing, true);
-      await tester.tap(find.text('暂停'));
+      await tester.tap(find.byTooltip('暂停'));
       await tester.pumpAndSettle();
       expect(playing, false);
       final slider = tester
@@ -110,7 +110,7 @@ void main() {
         jsonDecode(prefs.getString('reader.preferences.v1.test')!)['rate'],
         1.7,
       );
-      await tester.tap(find.text('播放 / 继续'));
+      await tester.tap(find.byTooltip('播放 / 继续'));
       await tester.pumpAndSettle();
       final stops = calls
           .where(

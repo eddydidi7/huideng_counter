@@ -3,6 +3,7 @@ import '../core/app_controller.dart';
 import 'note_share_actions.dart';
 import 'note_tools.dart';
 import 'note_typography_page.dart';
+import 'stepper_slider.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'note_rich_content.dart';
@@ -885,10 +886,11 @@ class _NoteReaderPageState extends State<NoteReaderPage>
     children: [
       SizedBox(width: 75, child: Text(title)),
       Expanded(
-        child: Slider(
+        child: StepperSlider(
           value: value,
           min: min,
           max: max,
+          step: (max - min) / steps,
           divisions: steps,
           onChanged: change,
         ),
@@ -932,19 +934,24 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                       onPressed: starting ? null : () => skip(-1),
                       icon: const Icon(Icons.skip_previous),
                     ),
-                    TextButton(
+                    IconButton.filled(
+                      tooltip: starting
+                          ? '准备语音…'
+                          : playing
+                          ? '暂停'
+                          : '播放 / 继续',
                       onPressed: starting
                           ? null
                           : playing
                           ? pauseSpeech
                           : play,
-                      child: Text(
-                        starting
-                            ? '准备语音…'
-                            : playing
-                            ? '暂停'
-                            : '播放 / 继续',
-                      ),
+                      icon: starting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(playing ? Icons.pause : Icons.play_arrow),
                     ),
                     IconButton(
                       tooltip: '下一段',
@@ -1484,16 +1491,18 @@ class _NoteReaderPageState extends State<NoteReaderPage>
                       icon: Icon(Icons.tune, color: foreground),
                     ),
                     Expanded(
-                      child: Slider(
-                        key: const ValueKey('reader-progress'),
+                      child: StepperSlider(
+                        sliderKey: const ValueKey('reader-progress'),
                         value:
                             draggingProgress ??
                             progress.fraction(reading, paragraphFraction),
-                        onChangeStart: starting ? null : beginSeek,
-                        onChanged: starting
-                            ? null
-                            : (v) => setState(() => draggingProgress = v),
-                        onChangeEnd: starting ? null : finishSeek,
+                        min: 0,
+                        max: 1,
+                        step: .01,
+                        enabled: !starting,
+                        onChangeStart: beginSeek,
+                        onChanged: (v) => setState(() => draggingProgress = v),
+                        onChangeEnd: finishSeek,
                       ),
                     ),
                     SizedBox(

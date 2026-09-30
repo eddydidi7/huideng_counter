@@ -131,7 +131,7 @@ void main() {
       expect(progress().value, closeTo(.5, .002));
       await tester.tap(find.byTooltip('阅读设置'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('播放 / 继续'));
+      await tester.tap(find.byTooltip('播放 / 继续'));
       await tester.pumpAndSettle();
       expect(
         (calls.lastWhere((c) => c.method == 'speak').arguments as Map)['text'],
