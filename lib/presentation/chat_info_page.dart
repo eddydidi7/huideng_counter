@@ -4,6 +4,7 @@ import '../data/remote/group_admin.dart';
 import '../data/repositories/chat_repository.dart';
 import 'group_admin_page.dart' show GroupMembersPage;
 import 'chat_avatar.dart';
+import 'chat_page.dart' show chatText;
 import 'dart:async';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -80,6 +81,15 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
   bool adminReady = false, savedToContacts = false;
   List<String> specialFollow = [];
   Map<String, String> specialNames = {};
+  // Populated from the same admin.overview() call GroupAdminPage itself
+  // uses, so "聊天信息" and "群管理与设置" never show two different answers
+  // for the same setting.
+  String myRole = 'member';
+  Map settings = const {};
+  int pendingRequests = 0;
+  String? myGroupNickname;
+  bool get manager => myRole == 'owner' || myRole == 'admin';
+  bool get isOwner => myRole == 'owner';
 
   Future<void> loadLocal() async {
     final view = (await widget.repository.store.roomViews())[widget.room['id']];
@@ -174,6 +184,10 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
           final page = await admin!.members(limit: 20);
           paged = [...GroupAdmin.rows(page['managers']), ...GroupAdmin.rows(page['items'])];
           memberCount = (overview['member_count'] as num?)?.toInt();
+          myRole = overview['my_role'] as String? ?? 'member';
+          settings = overview['settings'] as Map? ?? const {};
+          pendingRequests = (overview['pending_requests'] as num?)?.toInt() ?? 0;
+          myGroupNickname = overview['my_nickname'] as String?;
           adminReady = true;
         } catch (_) {
           paged = null; // Older server: fall back to the full roster below.
@@ -288,6 +302,16 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
                     child: const Icon(Icons.add),
                   ),
                 ),
+                if (group && adminReady && manager)
+                  SizedBox(
+                    key: const ValueKey('chat-info-remove-member'),
+                    width: 64,
+                    height: 64,
+                    child: OutlinedButton(
+                      onPressed: () => action('group_remove_members'),
+                      child: const Icon(Icons.remove),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -296,17 +320,8 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
             'Members (${memberCount ?? members.length})',
             'members',
           ),
-          if (group && adminReady)
-            ListTile(
-              key: const ValueKey('chat-info-group-admin'),
-              leading: const Icon(Icons.admin_panel_settings_outlined),
-              title: Text(tr('群管理与设置', 'Group management')),
-              subtitle: Text(
-                tr('成员、禁言、公告、群文件、搜索、群昵称', 'Members, mutes, notices, files, search'),
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => action('group_admin'),
-            ),
+          if (group) tile('群公告', 'Group announcements', 'group_announcements'),
+          if (group) tile('群文件', 'Group files', 'group_files'),
           if (group) tile('群文件、公告与共修', 'Group learning', 'group_learning'),
           if (group) tile('群二维码', 'Group QR code', 'qr'),
           if (group)
@@ -318,8 +333,162 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
                   : null,
               onTap: canRename || owner ? () => action('rename') : null,
             ),
-          const Divider(),
+          if (group) tile('置顶消息', 'Pinned messages', 'group_pins'),
           tile('查找聊天记录', 'Search chat history', 'search'),
+          if (group && adminReady)
+            ListTile(
+              key: const ValueKey('chat-info-my-nickname'),
+              title: Text(tr('我的群昵称', 'My group nickname')),
+              subtitle: Text(myGroupNickname?.isNotEmpty == true ? myGroupNickname! : tr('未设置', 'Not set')),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final value = await chatText(
+                  context,
+                  tr('我的群昵称（留空恢复默认）', 'My group nickname (blank to reset)'),
+                  initial: myGroupNickname ?? '',
+                  maxLength: 40,
+                );
+                if (value == null || !mounted) return;
+                setState(() => busy = true);
+                try {
+                  await admin!.myNickname(value.trim());
+                  await refreshInfo();
+                } catch (_) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(tr('保存失败，请重试', 'Could not save; retry'))),
+                    );
+                  }
+                } finally {
+                  if (mounted) setState(() => busy = false);
+                }
+              },
+            ),
+          if (group && adminReady && manager) ...[
+            const Divider(),
+            ListTile(
+              key: const ValueKey('chat-info-join-requests'),
+              leading: const Icon(Icons.how_to_reg_outlined),
+              title: Text(tr('入群管理', 'Join requests')),
+              subtitle: Text(tr('$pendingRequests 条待处理', '$pendingRequests pending')),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => action('group_requests'),
+            ),
+            ListTile(
+              key: const ValueKey('chat-info-manage-admins'),
+              leading: const Icon(Icons.admin_panel_settings_outlined),
+              title: Text(tr('群管理员管理', 'Group admins')),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => action('group_members'),
+            ),
+            SwitchListTile(
+              key: const ValueKey('chat-info-all-mute'),
+              title: Text(tr('全员禁言', 'Mute all')),
+              subtitle: Text(tr('开启后只有群主和管理员可以发言', 'Only the owner and admins can speak')),
+              value: settings['all_muted'] == true,
+              onChanged: busy
+                  ? null
+                  : (v) async {
+                      setState(() => busy = true);
+                      try {
+                        await admin!.allMute(v);
+                        await refreshInfo();
+                      } catch (_) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(tr('更新失败，请重试', 'Could not update; retry'))),
+                          );
+                        }
+                      } finally {
+                        if (mounted) setState(() => busy = false);
+                      }
+                    },
+            ),
+            SwitchListTile(
+              key: const ValueKey('chat-info-member-friend-add'),
+              title: Text(tr('允许群成员互加好友', 'Allow members to add each other')),
+              subtitle: Text(
+                tr('关闭后普通成员不能通过群成员列表互加好友，已有好友关系不受影响',
+                    'Existing friendships are unaffected either way'),
+              ),
+              value: settings['allow_member_friend_add'] != false,
+              onChanged: busy
+                  ? null
+                  : (v) async {
+                      setState(() => busy = true);
+                      try {
+                        await admin!.memberFriendAdd(v);
+                        await refreshInfo();
+                      } catch (_) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(tr('更新失败，请重试', 'Could not update; retry'))),
+                          );
+                        }
+                      } finally {
+                        if (mounted) setState(() => busy = false);
+                      }
+                    },
+            ),
+          ],
+          if (group && adminReady && isOwner)
+            ListTile(
+              key: const ValueKey('chat-info-transfer-owner'),
+              leading: const Icon(Icons.swap_horiz),
+              title: Text(tr('转让群主', 'Transfer ownership')),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final target = await Navigator.push<Map<String, dynamic>>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => GroupMembersPage(
+                      app: widget.app,
+                      admin: admin!,
+                      myRole: myRole,
+                      pickTitle: tr('选择新群主', 'Choose the new owner'),
+                    ),
+                  ),
+                );
+                if (target == null || !mounted) return;
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: Text(tr('转让群主？', 'Transfer ownership?')),
+                    content: Text(
+                      tr(
+                        '将群主转让给 ${target['nickname']}。转让后你将成为管理员（如管理员已满 10 位则为普通成员），无法撤销。',
+                        'Ownership will transfer to ${target['nickname']}. You will become an admin (or a regular member if admins are already full). This cannot be undone.',
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: Text(tr('取消', 'Cancel')),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: Text(tr('确认转让', 'Confirm')),
+                      ),
+                    ],
+                  ),
+                );
+                if (ok != true || !mounted) return;
+                setState(() => busy = true);
+                try {
+                  await admin!.transferOwner(target['user_id'] as String);
+                  await refreshInfo();
+                } catch (_) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(tr('转让未完成，请重试', 'Transfer did not complete; retry'))),
+                    );
+                  }
+                } finally {
+                  if (mounted) setState(() => busy = false);
+                }
+              },
+            ),
+          const Divider(),
           SwitchListTile(
             title: Text(tr('消息免打扰', 'Mute notifications')),
             value: muted,
@@ -406,15 +575,30 @@ class _ChatInfoPageState extends State<ChatInfoPage> {
               },
             ),
           ],
-          tile('提醒我查看聊天', 'Remind me', 'reminder'),
-          const Divider(),
           tile('设置当前聊天背景', 'Chat background', 'background'),
+          tile('已接收文件', 'Received files', 'received_files'),
           tile('清空本机聊天记录', 'Clear local history', 'clear_history'),
           if (widget.restoreAvailable)
             tile('恢复显示历史记录', 'Restore history', 'restore_history'),
-          tile('已接收文件', 'Received files', 'received_files'),
           const Divider(),
-          tile('投诉', 'Report', 'report'),
+          if (group && adminReady)
+            ListTile(
+              key: const ValueKey('chat-info-group-admin'),
+              leading: const Icon(Icons.settings_outlined),
+              title: Text(tr('群管理与设置', 'Group management')),
+              subtitle: Text(
+                tr('黑名单、疑似刷屏、群成员权限、管理日志、提醒、投诉',
+                    'Blocklist, spam watch, permissions, logs, reminders, reports'),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => action('group_admin'),
+            ),
+          // For a direct chat there is no level-2 "group management" page to
+          // hold these, so they stay here; for a group they moved into it.
+          if (!group) ...[
+            tile('提醒我查看聊天', 'Remind me', 'reminder'),
+            tile('投诉', 'Report', 'report'),
+          ],
           if (!group) ...[
             tile('拉黑此用户', 'Block user', 'block_user'),
             tile('解除拉黑', 'Unblock user', 'unblock_user'),

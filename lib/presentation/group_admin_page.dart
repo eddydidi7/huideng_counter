@@ -260,86 +260,30 @@ class _GroupAdminPageState extends State<GroupAdminPage> {
                       color: Theme.of(context).colorScheme.errorContainer,
                       child: Text(groupAdminMessages[block] ?? block),
                     ),
-                  tile(Icons.people_outline, '群成员（${data!['member_count']}）',
-                      () => open(GroupMembersPage(app: widget.app, admin: admin, myRole: role)),
-                      key: const ValueKey('group-admin-members')),
-                  tile(Icons.campaign_outlined, '群公告',
-                      () => open(GroupAnnouncementsPage(app: widget.app, admin: admin, manager: manager))),
-                  tile(Icons.folder_outlined, '群文件',
-                      () => open(GroupFilesPage(app: widget.app, admin: admin, manager: manager)),
-                      subtitle: '文件名 · 大小 · 上传者 · 日期'),
-                  tile(Icons.push_pin_outlined, '置顶消息',
-                      () => open(GroupPinsPage(admin: admin, manager: manager))),
+                  // 群成员、群公告、群文件、置顶消息、我的群昵称、全员禁言、允许互加好友、
+                  // 入群管理、转让群主 all moved to 聊天信息 (level 1) — see chat_info_page.dart.
+                  // Kept here since it isn't part of that promotion and has no other home yet.
                   tile(Icons.manage_search, '搜索群内容',
                       () => open(GroupSearchPage(app: widget.app, admin: admin, myRole: role))),
-                  tile(Icons.badge_outlined, '我的群昵称', () async {
-                    final value = await chatText(context, '我的群昵称（留空恢复默认）',
-                        initial: data?['my_nickname'] as String? ?? '', maxLength: 40);
-                    if (value == null || !context.mounted) return;
-                    if (await _run(context, () => admin.myNickname(value.trim()), done: '群昵称已保存')) await load();
-                  }, subtitle: data?['my_nickname'] as String? ?? '未设置'),
                   if (manager) ...[
                     const Divider(),
-                    SwitchListTile(
-                      key: const ValueKey('group-admin-all-mute'),
-                      dense: true,
-                      secondary: const Icon(Icons.voice_over_off_outlined),
-                      title: const Text('全员禁言'),
-                      subtitle: const Text('开启后只有群主和管理员可以发言'),
-                      value: settings['all_muted'] == true,
-                      onChanged: (v) async {
-                        if (await _run(context, () => admin.allMute(v))) await load();
-                      },
-                    ),
-                    SwitchListTile(
-                      key: const ValueKey('group-admin-member-friend-add'),
-                      dense: true,
-                      secondary: const Icon(Icons.person_add_alt_1_outlined),
-                      title: const Text('允许群成员互加好友'),
-                      subtitle: const Text('关闭后普通成员不能通过群成员列表互加好友，已有好友关系不受影响'),
-                      value: settings['allow_member_friend_add'] != false,
-                      onChanged: (v) async {
-                        if (await _run(context, () => admin.memberFriendAdd(v))) await load();
-                      },
-                    ),
-                    tile(Icons.how_to_reg_outlined, '入群申请',
-                        () => open(GroupRequestsPage(admin: admin)),
-                        subtitle: '${data!['pending_requests']} 条待处理'),
                     tile(Icons.block_outlined, '黑名单（禁止再次加入）', () => open(GroupBansPage(admin: admin))),
                     tile(Icons.speed_outlined, '疑似刷屏成员', () => open(GroupSpamPage(admin: admin))),
                   ],
                   if (owner) ...[
                     const Divider(),
-                    tile(Icons.tune, '群设置（入群方式、新成员、防刷屏等）',
+                    tile(Icons.tune, '群成员权限与防刷屏设置（入群方式、新成员、发言与文件等）',
                         () => open(GroupSettingsPage(app: widget.app, admin: admin, overview: data!)),
                         key: const ValueKey('group-admin-settings')),
                     tile(Icons.history, '群管理日志', () => open(GroupLogsPage(admin: admin))),
-                    tile(Icons.swap_horiz, '转让群主', () async {
-                      final target = await Navigator.push<Map<String, dynamic>>(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => GroupMembersPage(
-                            app: widget.app, admin: admin, myRole: role, pickTitle: '选择新群主'),
-                        ),
-                      );
-                      if (target == null || !context.mounted) return;
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('转让群主？'),
-                          content: Text('将群主转让给 ${target['nickname']}。转让后你将成为管理员（如管理员已满 10 位则为普通成员），无法撤销。'),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('确认转让')),
-                          ],
-                        ),
-                      );
-                      if (ok == true && context.mounted &&
-                          await _run(context, () => admin.transferOwner(target['user_id'] as String), done: '群主已转让')) {
-                        await load();
-                      }
-                    }),
                   ],
+                  const Divider(),
+                  tile(Icons.notifications_active_outlined, '提醒我查看聊天',
+                      () => Navigator.pop(context, 'reminder'),
+                      key: const ValueKey('group-admin-reminder')),
+                  tile(Icons.flag_outlined, '投诉',
+                      () => Navigator.pop(context, 'report'),
+                      key: const ValueKey('group-admin-report')),
                 ],
               ),
             ),
@@ -357,6 +301,7 @@ class GroupMembersPage extends StatefulWidget {
     required this.admin,
     required this.myRole,
     this.pickTitle,
+    this.initialSelecting = false,
   });
   final AppController app;
   final GroupAdmin admin;
@@ -364,6 +309,11 @@ class GroupMembersPage extends StatefulWidget {
 
   /// When set, tapping a member returns it (e.g. choosing a new owner).
   final String? pickTitle;
+
+  /// Opens straight into batch-select mode, e.g. for a dedicated "remove
+  /// member" entry point. Reuses the exact same batch-remove flow as the
+  /// "批量" toggle below; the user just doesn't have to tap it first.
+  final bool initialSelecting;
   @override
   State<GroupMembersPage> createState() => _GroupMembersPageState();
 }
@@ -372,7 +322,8 @@ class _GroupMembersPageState extends State<GroupMembersPage> {
   final search = TextEditingController();
   List<Map<String, dynamic>> managers = [], items = [];
   int total = 0;
-  bool loading = false, more = false, selecting = false;
+  bool loading = false, more = false;
+  late bool selecting = widget.initialSelecting && widget.pickTitle == null;
   final selected = <String>{};
   String? error;
   Timer? debounce;

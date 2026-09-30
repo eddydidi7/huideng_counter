@@ -1389,35 +1389,56 @@ class _ChatRoomPageState extends State<ChatRoomPage>
   }
 
   Future<void> roomAction(String value) async {
-    if (group && (value == 'group_admin' || value == 'group_members')) {
+    if (group && value == 'group_admin') {
       final admin = groupAdmin ??= GroupAdmin(repo.remote.client, room);
-      await Navigator.push(
+      // GroupAdminPage can pop a follow-up action (e.g. "提醒我查看聊天" /
+      // "投诉", moved there from the old level-1 menu) instead of a plain
+      // void dismissal, so its own entries keep reusing this same handler.
+      final next = await Navigator.push<String>(
         context,
-        MaterialPageRoute<void>(
-          builder: (_) => value == 'group_admin'
-              ? GroupAdminPage(app: widget.app, admin: admin, title: title)
-              : GroupMembersPage(
-                  app: widget.app,
-                  admin: admin,
-                  myRole: groupRole,
-                ),
+        MaterialPageRoute<String>(
+          builder: (_) => GroupAdminPage(app: widget.app, admin: admin, title: title),
         ),
       );
       await loadGroupState();
+      if (mounted && next != null) await roomAction(next);
       return;
     }
-    if (value == 'group_files') {
+    if (group &&
+        (value == 'group_members' ||
+            value == 'group_remove_members' ||
+            value == 'group_announcements' ||
+            value == 'group_files' ||
+            value == 'group_pins' ||
+            value == 'group_requests')) {
       final admin = groupAdmin ??= GroupAdmin(repo.remote.client, room);
       await Navigator.push(
         context,
         MaterialPageRoute<void>(
-          builder: (_) => GroupFilesPage(
-            app: widget.app,
-            admin: admin,
-            manager: groupRole == 'owner' || groupRole == 'admin',
-          ),
+          builder: (_) => switch (value) {
+            'group_remove_members' => GroupMembersPage(
+                app: widget.app,
+                admin: admin,
+                myRole: groupRole,
+                initialSelecting: true,
+              ),
+            'group_announcements' => GroupAnnouncementsPage(
+                app: widget.app,
+                admin: admin,
+                manager: groupManager,
+              ),
+            'group_files' => GroupFilesPage(
+                app: widget.app,
+                admin: admin,
+                manager: groupManager,
+              ),
+            'group_pins' => GroupPinsPage(admin: admin, manager: groupManager),
+            'group_requests' => GroupRequestsPage(admin: admin),
+            _ => GroupMembersPage(app: widget.app, admin: admin, myRole: groupRole),
+          },
         ),
       );
+      await loadGroupState();
       return;
     }
     if (value == 'group_learning') {
